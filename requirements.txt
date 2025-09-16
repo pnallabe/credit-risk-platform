@@ -1,0 +1,15 @@
+pandas
+numpy
+scikit-learn
+fastapi
+uvicorn
+pydantic
+joblib
+feast
+redis
+mlflow
+evidently
+streamlit
+requests
+python-dotenv
+pytest
