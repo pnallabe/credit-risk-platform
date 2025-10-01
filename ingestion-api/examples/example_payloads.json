@@ -1,0 +1,277 @@
+{
+  "transaction_batch_example": {
+    "source": "banking-core-system",
+    "batch_id": "batch_20250929_001",
+    "transactions": [
+      {
+        "transaction_id": "txn_jkl012",
+        "account_id": "acc_987654",
+        "customer_id": "cust_555",
+        "amount": 1200.00,
+        "currency": "USD",
+        "posted_at": "2025-09-29T16:00:00Z",
+        "description": "RENT PAYMENT - LANDLORD LLC",
+        "mcc": null,
+        "counterparty": "Property Management LLC",
+        "transaction_type": "debit",
+        "channel": "online"
+      },
+      {
+        "transaction_id": "txn_mno345",
+        "account_id": "acc_987654",
+        "customer_id": "cust_555",
+        "amount": 65.20,
+        "currency": "USD",
+        "posted_at": "2025-09-29T18:45:00Z",
+        "description": "SHELL GAS STATION",
+        "mcc": "5541",
+        "counterparty": "Shell",
+        "transaction_type": "debit",
+        "channel": "pos"
+      }
+    ]
+  },
+  
+  "application_batch_example": {
+    "source": "loan-origination-platform",
+    "batch_id": "app_batch_20250929_001",
+    "applications": [
+      {
+        "application_id": "app_loan_12345",
+        "customer_id": "cust_555",
+        "account_id": "acc_987654",
+        "loan_amount": 50000.00,
+        "loan_purpose": "debt_consolidation",
+        "loan_term_months": 60,
+        "interest_rate": 7.5,
+        "annual_income": 85000.00,
+        "employment_status": "full_time",
+        "employment_length_months": 48,
+        "credit_score": 720,
+        "existing_debt": 18000.00,
+        "applied_at": "2025-09-29T10:00:00Z",
+        "channel": "online"
+      },
+      {
+        "application_id": "app_loan_12346",
+        "customer_id": "cust_666",
+        "account_id": "acc_123456",
+        "loan_amount": 25000.00,
+        "loan_purpose": "home_improvement",
+        "loan_term_months": 36,
+        "interest_rate": 6.8,
+        "annual_income": 62000.00,
+        "employment_status": "full_time",
+        "employment_length_months": 24,
+        "credit_score": 680,
+        "existing_debt": 8500.00,
+        "applied_at": "2025-09-29T11:30:00Z",
+        "channel": "mobile"
+      },
+      {
+        "application_id": "app_loan_12347",
+        "customer_id": "cust_777",
+        "account_id": null,
+        "loan_amount": 15000.00,
+        "loan_purpose": "auto",
+        "loan_term_months": 48,
+        "interest_rate": 8.2,
+        "annual_income": 55000.00,
+        "employment_status": "full_time",
+        "employment_length_months": 12,
+        "credit_score": 650,
+        "existing_debt": 5000.00,
+        "applied_at": "2025-09-29T13:15:00Z",
+        "channel": "branch"
+      }
+    ]
+  },
+  
+  "single_transaction_minimal": {
+    "source": "test-system",
+    "transactions": [
+      {
+        "transaction_id": "txn_test_001",
+        "account_id": "acc_test_001",
+        "amount": 100.00,
+        "currency": "USD",
+        "posted_at": "2025-09-29T12:00:00Z",
+        "transaction_type": "debit"
+      }
+    ]
+  },
+  
+  "single_application_minimal": {
+    "source": "test-system",
+    "applications": [
+      {
+        "application_id": "app_test_001",
+        "customer_id": "cust_test_001",
+        "loan_amount": 10000.00,
+        "loan_purpose": "personal",
+        "loan_term_months": 24,
+        "applied_at": "2025-09-29T12:00:00Z"
+      }
+    ]
+  },
+  
+  "multi_currency_transactions": {
+    "source": "international-banking",
+    "batch_id": "intl_batch_001",
+    "transactions": [
+      {
+        "transaction_id": "txn_eur_001",
+        "account_id": "acc_intl_001",
+        "customer_id": "cust_intl_001",
+        "amount": 250.00,
+        "currency": "EUR",
+        "posted_at": "2025-09-29T10:00:00Z",
+        "description": "Hotel Paris",
+        "transaction_type": "debit",
+        "channel": "pos"
+      },
+      {
+        "transaction_id": "txn_gbp_001",
+        "account_id": "acc_intl_001",
+        "customer_id": "cust_intl_001",
+        "amount": 150.00,
+        "currency": "GBP",
+        "posted_at": "2025-09-29T12:00:00Z",
+        "description": "Harrods London",
+        "transaction_type": "debit",
+        "channel": "pos"
+      },
+      {
+        "transaction_id": "txn_jpy_001",
+        "account_id": "acc_intl_001",
+        "customer_id": "cust_intl_001",
+        "amount": 25000.00,
+        "currency": "JPY",
+        "posted_at": "2025-09-29T14:00:00Z",
+        "description": "Tokyo Restaurant",
+        "transaction_type": "debit",
+        "channel": "pos"
+      }
+    ]
+  },
+  
+  "business_loan_application": {
+    "source": "sme-lending-platform",
+    "batch_id": "sme_batch_001",
+    "applications": [
+      {
+        "application_id": "app_business_001",
+        "customer_id": "biz_cust_001",
+        "account_id": "biz_acc_001",
+        "loan_amount": 150000.00,
+        "loan_purpose": "business",
+        "loan_term_months": 84,
+        "interest_rate": 9.5,
+        "annual_income": 250000.00,
+        "employment_status": "self_employed",
+        "employment_length_months": 60,
+        "credit_score": 700,
+        "existing_debt": 45000.00,
+        "applied_at": "2025-09-29T09:00:00Z",
+        "channel": "online"
+      }
+    ]
+  },
+  
+  "high_risk_patterns": {
+    "source": "fraud-monitoring",
+    "batch_id": "fraud_test_001",
+    "transactions": [
+      {
+        "transaction_id": "txn_suspicious_001",
+        "account_id": "acc_risk_001",
+        "customer_id": "cust_risk_001",
+        "amount": 5000.00,
+        "currency": "USD",
+        "posted_at": "2025-09-29T02:30:00Z",
+        "description": "ATM WITHDRAWAL UNUSUAL LOCATION",
+        "mcc": "6011",
+        "counterparty": "ATM Network",
+        "transaction_type": "debit",
+        "channel": "atm"
+      },
+      {
+        "transaction_id": "txn_suspicious_002",
+        "account_id": "acc_risk_001",
+        "customer_id": "cust_risk_001",
+        "amount": 4500.00,
+        "currency": "USD",
+        "posted_at": "2025-09-29T02:35:00Z",
+        "description": "ATM WITHDRAWAL UNUSUAL LOCATION",
+        "mcc": "6011",
+        "counterparty": "ATM Network",
+        "transaction_type": "debit",
+        "channel": "atm"
+      },
+      {
+        "transaction_id": "txn_suspicious_003",
+        "account_id": "acc_risk_001",
+        "customer_id": "cust_risk_001",
+        "amount": 3000.00,
+        "currency": "USD",
+        "posted_at": "2025-09-29T02:40:00Z",
+        "description": "ONLINE PURCHASE ELECTRONICS",
+        "mcc": "5732",
+        "counterparty": "Unknown Retailer",
+        "transaction_type": "debit",
+        "channel": "online"
+      }
+    ]
+  }
+}
+        "transaction_id": "txn_abc123",
+        "account_id": "acc_987654",
+        "customer_id": "cust_555",
+        "amount": 45.50,
+        "currency": "USD",
+        "posted_at": "2025-09-29T08:30:00Z",
+        "description": "STARBUCKS #12345 NEW YORK NY",
+        "mcc": "5814",
+        "counterparty": "Starbucks",
+        "transaction_type": "debit",
+        "channel": "pos"
+      },
+      {
+        "transaction_id": "txn_def456",
+        "account_id": "acc_987654",
+        "customer_id": "cust_555",
+        "amount": 2500.00,
+        "currency": "USD",
+        "posted_at": "2025-09-29T09:15:00Z",
+        "description": "PAYROLL DEPOSIT - ACME CORP",
+        "mcc": null,
+        "counterparty": "ACME Corporation",
+        "transaction_type": "credit",
+        "channel": "ach"
+      },
+      {
+        "transaction_id": "txn_ghi789",
+        "account_id": "acc_987654",
+        "customer_id": "cust_555",
+        "amount": 150.75,
+        "currency": "USD",
+        "posted_at": "2025-09-29T14:22:00Z",
+        "description": "AMAZON.COM ORDER #111-222-333",
+        "mcc": "5942",
+        "counterparty": "Amazon.com",
+        "transaction_type": "debit",
+        "channel": "online"
+      },
+      {
+        "transaction_id": "txn_jkl012",
+        "account_id": "acc_987654",
+        "customer_id": "cust_555",
+        "amount": 75.00,
+        "currency": "USD",
+        "posted_at": "2025-09-29T15:00:00Z",
+        "description": "TARGET STORE #1234",
+        "mcc": "5311",
+        "counterparty": "Target",
+        "transaction_type": "debit",
+        "channel": "pos"
+      }
