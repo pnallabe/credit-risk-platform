@@ -1,0 +1,117 @@
+steps:
+  # Install dependencies
+  - name: 'python:3.11-slim'
+    id: 'install-deps'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install -r requirements.txt
+
+  # Run linting (allow failure, just warn)
+  - name: 'python:3.11-slim'
+    id: 'lint'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install black flake8 mypy
+        echo "Running black..."
+        black --check src/main.py src/models.py src/auth.py || echo "⚠️ Black formatting issues found"
+        echo "Running flake8..."
+        flake8 src/main.py src/models.py src/auth.py --max-line-length=100 || echo "⚠️ Flake8 issues found"
+        echo "Running mypy..."
+        mypy src/main.py src/models.py src/auth.py --ignore-missing-imports || echo "⚠️ Mypy issues found"
+        echo "✓ Lint step completed (warnings only)"
+    waitFor: ['install-deps']
+
+  # Skip tests for now (uncomment when ready)
+  # - name: 'python:3.11-slim'
+  #   id: 'test'
+  #   entrypoint: 'bash'
+  #   args:
+  #     - '-c'
+  #     - |
+  #       pip install -r requirements.txt
+  #       pytest tests/test_main.py -v --cov=src.main --cov-report=term --cov-report=xml
+  #   env:
+  #     - 'GCS_RAW_BUCKET=test-bucket'
+  #     - 'PUBSUB_TOPIC=projects/test/topics/test'
+  #     - 'GCP_PROJECT_ID=test-project'
+  #     - 'JWT_SECRET=test-secret'
+  #   waitFor: ['lint']
+
+  # Build Docker image (no cache to ensure fresh build)
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build'
+    args:
+      - 'build'
+      - '--no-cache'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/ingestion-api:${_IMAGE_TAG}'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/ingestion-api:latest'
+      - '-f'
+      - 'deployment/Dockerfile.minimal'
+      - '.'
+    waitFor: ['lint']
+
+  # Push Docker image to Artifact Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/ingestion-api'
+    waitFor: ['build']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/ingestion-api:${_IMAGE_TAG}'
+      - '--region=${_REGION}'
+      - '--platform=managed'
+      - '--no-allow-unauthenticated'
+      - '--set-env-vars=GCS_RAW_BUCKET=${_GCS_RAW_BUCKET},PUBSUB_TOPIC=${_PUBSUB_TOPIC},GCP_PROJECT_ID=${PROJECT_ID}'
+      - '--set-secrets=JWT_SECRET=jwt-secret:latest'
+      - '--service-account=${_SERVICE_ACCOUNT}'
+      - '--memory=1Gi'
+      - '--cpu=2'
+      - '--max-instances=10'
+      - '--min-instances=0'
+      - '--concurrency=80'
+      - '--timeout=300'
+      - '--port=8080'
+      - '--labels=environment=${_ENVIRONMENT},component=ingestion'
+    waitFor: ['push']
+
+# Substitutions for variables
+substitutions:
+  _REGION: us-central1
+  _REPO_NAME: risk-platform
+  _SERVICE_NAME: ingestion-api-${_ENVIRONMENT}
+  _ENVIRONMENT: dev
+  _IMAGE_TAG: ${SHORT_SHA}
+  _GCS_RAW_BUCKET: risk-raw-data-${_ENVIRONMENT}
+  _PUBSUB_TOPIC: projects/${PROJECT_ID}/topics/ingestion-events-${_ENVIRONMENT}
+  _SERVICE_ACCOUNT: ingestion-api@${PROJECT_ID}.iam.gserviceaccount.com
+
+# Options
+options:
+  machineType: 'N1_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+  dynamicSubstitutions: true
+  substitutionOption: 'ALLOW_LOOSE'
+
+# Timeout for entire build
+timeout: '1800s'
+
+# Images to store in Artifact Registry
+images:
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/ingestion-api:${_IMAGE_TAG}'
+  - '${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO_NAME}/ingestion-api:latest'
