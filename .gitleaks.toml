@@ -1,0 +1,89 @@
+# Gitleaks configuration for credit-risk-platform
+# Docs: https://github.com/gitleaks/gitleaks/blob/master/config/gitleaks.toml
+
+title = "credit-risk-platform gitleaks config"
+
+[extend]
+# Inherit all default gitleaks rules
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# Project-specific secret rules
+# ---------------------------------------------------------------------------
+[[rules]]
+id          = "openai-api-key"
+description = "OpenAI API key"
+regex       = '''(?i)(openai[_-]?api[_-]?key|OPENAI_API_KEY)\s*[:=]\s*["']?(sk-[A-Za-z0-9]{32,})["']?'''
+tags        = ["openai", "api-key"]
+
+[[rules]]
+id          = "nextauth-secret"
+description = "NextAuth secret"
+regex       = '''(?i)(NEXTAUTH_SECRET|nextauth[_-]?secret)\s*[:=]\s*["']([A-Za-z0-9+/=]{20,})["']'''
+tags        = ["nextauth", "secret"]
+
+[[rules]]
+id          = "jwt-secret"
+description = "JWT signing secret"
+regex       = '''(?i)(jwt[_-]?secret|secret[_-]?key)\s*[:=]\s*["']([A-Za-z0-9!@#$%^&*()_+\-=]{16,})["']'''
+tags        = ["jwt", "secret"]
+
+[[rules]]
+id          = "postgres-password"
+description = "Postgres connection string with password"
+regex       = '''postgres(?:ql)?:\/\/[^:]+:([^@]{6,})@'''
+tags        = ["postgres", "password"]
+
+[[rules]]
+id          = "gcp-service-account-key"
+description = "GCP service account private key id"
+regex       = '''"private_key_id"\s*:\s*"([a-f0-9]{40})"'''
+tags        = ["gcp", "service-account"]
+
+[[rules]]
+id          = "mlflow-tracking-token"
+description = "MLflow tracking server token"
+regex       = '''(?i)(mlflow[_-]?tracking[_-]?token|MLFLOW_TRACKING_TOKEN)\s*[:=]\s*["']([A-Za-z0-9_\-]{16,})["']'''
+tags        = ["mlflow", "token"]
+
+[[rules]]
+id          = "google-oauth-secret"
+description = "Google OAuth client secret"
+regex       = '''(?i)(GOOGLE_CLIENT_SECRET|google[_-]?client[_-]?secret)\s*[:=]\s*["'](GOCSPX-[A-Za-z0-9_\-]{28,})["']'''
+tags        = ["google", "oauth"]
+
+# ---------------------------------------------------------------------------
+# Allowlists — known false positives
+# ---------------------------------------------------------------------------
+[allowlist]
+description = "Global allowlist"
+
+# Example env files and docs are fine — they use placeholder values
+paths = [
+  '''^\.env\.example$''',
+  '''^\.secrets\.baseline$''',
+  '''^docs/''',
+  '''\.md$''',
+  '''^ingestion-api/docs/''',
+  '''^ingestion-api/examples/''',
+  '''^\.github/workflows/''',
+]
+
+# Placeholder / example values that are not real secrets
+regexes = [
+  '''your[_-]?secret[_-]?here''',
+  '''change[_-]?me''',
+  '''replace[_-]?me''',
+  '''<[A-Z_]+>''',
+  '''\$\{[A-Z_]+\}''',       # shell variable references like ${SECRET}
+  '''sk-\.\.\.|sk-xxxx''',   # redacted examples
+  '''^#''',                   # commented-out lines
+  '''example\.com''',
+  '''localhost''',
+  '''test_?password''',
+  '''dummy_?secret''',
+  '''fake_?key''',
+]
+
+# Commits from CI / automated tooling (set in your CI env)
+commits = []

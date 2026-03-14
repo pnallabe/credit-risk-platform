@@ -1,0 +1,133 @@
+# =============================================================================
+# credit-risk-platform .gitignore
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Secrets / credentials  *** NEVER commit these ***
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.der
+credentials.json
+service_account*.json
+application_default_credentials.json
+gcloud_*.json
+.gcp/
+.aws/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+pip-log.txt
+pip-delete-this-directory.txt
+*.egg-info/
+dist/
+build/
+.eggs/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# ---------------------------------------------------------------------------
+# Model & data artifacts  (use DVC / GCS / S3 instead)
+# ---------------------------------------------------------------------------
+*.pkl
+*.joblib
+*.h5
+*.keras
+*.pt
+*.pth
+*.onnx
+*.parquet
+*.feather
+*.arrow
+*.npz
+*.npy
+data/*.csv
+data/*.tsv
+data/*.json
+!data/README.md
+
+# Keep mlruns metadata (YAML/JSON/text) but not binary
+mlruns/**/*.pkl
+mlruns/**/*.h5
+mlruns/**/*.pt
+mlruns/**/*.pth
+
+# ---------------------------------------------------------------------------
+# Node / Next.js
+# ---------------------------------------------------------------------------
+node_modules/
+.next/
+out/
+.npm
+*.tsbuildinfo
+ui/*/node_modules/
+ui/*/.next/
+
+# ---------------------------------------------------------------------------
+# Docker / build
+# ---------------------------------------------------------------------------
+*.tar
+*.tar.gz
+docker-compose.override.yml
+
+# ---------------------------------------------------------------------------
+# Databases / large binary files
+# ---------------------------------------------------------------------------
+*.db
+*.sqlite
+*.sqlite3
+decision_audit.db
+
+# ---------------------------------------------------------------------------
+# Logs & temp
+# ---------------------------------------------------------------------------
+*.log
+*.log.*
+logs/
+tmp/
+temp/
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# IDE / editor
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/settings.json
+.vscode/launch.json
+*.swp
+*.swo
+*~
+
+# ---------------------------------------------------------------------------
+# Jupyter
+# ---------------------------------------------------------------------------
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ---------------------------------------------------------------------------
+# detect-secrets baseline (ok to commit — contains no real secrets)
+# ---------------------------------------------------------------------------
+# .secrets.baseline   <-- intentionally tracked

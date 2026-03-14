@@ -13,3 +13,24 @@ streamlit
 requests
 python-dotenv
 pytest
+
+# Phase 1 — Data Foundation
+faker
+pyarrow
+sqlalchemy[asyncio]>=2.0
+asyncpg
+psycopg2-binary
+
+# Phase 2 — Feature Engineering & Feature Store
+aiosqlite
+pytest-asyncio
+
+# Phase 3 — Machine Learning Models
+lightgbm
+optuna
+scipy
+matplotlib
+
+# Security / developer tooling
+pre-commit>=3.7
+detect-secrets>=1.5

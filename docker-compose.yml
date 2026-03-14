@@ -1,0 +1,295 @@
+version: "3.9"
+
+# ---------------------------------------------------------------------------
+# Credit Risk Platform — Full Stack
+# ---------------------------------------------------------------------------
+# Services:
+#   postgres          :5432  — Database
+#   redis             :6379  — Cache / rate-limit store
+#   mlflow            :5000  — ML experiment tracking
+#   ingestion-api     :8080  — Data ingestion (FastAPI)
+#   decision-api      :8081  — Underwriting engine (FastAPI)
+#   ai-agent          :8082  — LangChain AI agent (FastAPI + SSE)
+#   dashboard         :8501  — Legacy Streamlit dashboard
+#   applicant-portal  :3000  — Loan application portal (Next.js)
+#   analytics-dashboard :3001 — Internal analytics (Next.js)
+#
+# Usage:
+#   make dev           → docker compose up --build
+#   make dev-detach    → docker compose up --build -d
+#   make down          → docker compose down -v
+#   make logs          → docker compose logs -f
+# ---------------------------------------------------------------------------
+
+x-common-env: &common-env
+  POSTGRES_DB: ${POSTGRES_DB:-credit_risk}
+  POSTGRES_USER: ${POSTGRES_USER:-credit_user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: credit_risk_postgres
+    environment:
+      <<: *common-env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./db/migrations/002_agent_sessions.sql:/docker-entrypoint-initdb.d/02_agent_sessions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${POSTGRES_DB:-credit_risk}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — rate-limit backing store & session cache
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: credit_risk_redis
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MLflow Tracking Server
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: python:3.11-slim
+    container_name: credit_risk_mlflow
+    command: >
+      bash -c "pip install mlflow psycopg2-binary -q &&
+               mlflow server
+               --backend-store-uri postgresql://${POSTGRES_USER:-credit_user}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-credit_risk}
+               --default-artifact-root /mlflow/artifacts
+               --host 0.0.0.0
+               --port 5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Ingestion API  (port 8080)
+  # ---------------------------------------------------------------------------
+  ingestion-api:
+    build:
+      context: .
+      dockerfile: ingestion-api/deployment/Dockerfile
+    container_name: credit_risk_ingestion
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-credit_user}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-credit_risk}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Decision API  (port 8081)
+  # ---------------------------------------------------------------------------
+  decision-api:
+    build:
+      context: .
+      dockerfile: decision-api/Dockerfile
+    container_name: credit_risk_decision
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////app/data/decision_audit.db
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      FRAUD_MODEL_PATH: /app/models/fraud_detection/fraud_model_v1.pkl
+      RISK_MODEL_PATH: /app/models/credit_risk/risk_model_v1.pkl
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+    restart: unless-stopped
+    volumes:
+      - ./models:/app/models:ro
+      - decision_data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8081/v1/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # AI Agent  (port 8082)
+  # ---------------------------------------------------------------------------
+  ai-agent:
+    build:
+      context: .
+      dockerfile: ai-agent/Dockerfile
+    container_name: credit_risk_ai_agent
+    env_file: .env
+    environment:
+      DATABASE_URL: /app/data/decision_audit.db
+      AGENT_API_URL: http://ai-agent:8082
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      RATE_LIMIT: ${AGENT_RATE_LIMIT:-20/minute}
+      DASHBOARD_ORIGIN: http://analytics-dashboard:3001
+    ports:
+      - "8082:8082"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - decision_data:/app/data
+      - ./ai-agent/config:/app/config:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # AI Agent Scheduler  (sidecar — runs alongside the agent)
+  # ---------------------------------------------------------------------------
+  ai-agent-scheduler:
+    build:
+      context: .
+      dockerfile: ai-agent/Dockerfile
+    container_name: credit_risk_scheduler
+    command: ["python", "src/scheduler.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: /app/data/decision_audit.db
+      AGENT_API_URL: http://ai-agent:8082
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DRIFT_PSI_THRESHOLD: ${DRIFT_PSI_THRESHOLD:-0.25}
+    depends_on:
+      ai-agent:
+        condition: service_healthy
+    volumes:
+      - decision_data:/app/data
+      - ./ai-agent/config:/app/config:ro
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Streamlit Dashboard  (port 8501 — legacy)
+  # ---------------------------------------------------------------------------
+  dashboard:
+    image: python:3.11-slim
+    container_name: credit_risk_dashboard
+    command: >
+      bash -c "pip install streamlit plotly pandas numpy requests -q &&
+               streamlit run dashboard/app.py
+               --server.port=8501
+               --server.address=0.0.0.0
+               --server.headless=true"
+    ports:
+      - "8501:8501"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+    environment:
+      DECISION_API_URL: http://decision-api:8081
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Applicant Portal  (port 3000 — public-facing Next.js)
+  # ---------------------------------------------------------------------------
+  applicant-portal:
+    build:
+      context: .
+      dockerfile: ui/applicant-portal/Dockerfile
+      args:
+        NEXT_PUBLIC_DECISION_API_URL: http://decision-api:8081
+    container_name: credit_risk_portal
+    environment:
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-nextauth-secret}
+      DECISION_API_URL: http://decision-api:8081
+    ports:
+      - "3000:3000"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health 2>/dev/null || curl -sf http://localhost:3000 || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Analytics Dashboard  (port 3001 — internal role-based Next.js)
+  # ---------------------------------------------------------------------------
+  analytics-dashboard:
+    build:
+      context: .
+      dockerfile: ui/analytics-dashboard/Dockerfile
+      args:
+        NEXT_PUBLIC_DECISION_API_URL: http://decision-api:8081
+        NEXT_PUBLIC_AGENT_API_URL: http://ai-agent:8082
+    container_name: credit_risk_analytics
+    environment:
+      NEXTAUTH_URL: ${ANALYTICS_NEXTAUTH_URL:-http://localhost:3001}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-nextauth-secret}
+      DECISION_API_URL: http://decision-api:8081
+      AGENT_API_URL: http://ai-agent:8082
+    ports:
+      - "3001:3001"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+      ai-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health 2>/dev/null || curl -sf http://localhost:3001 || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  postgres_data:
+  redis_data:
+  mlflow_artifacts:
+  decision_data:
