@@ -323,3 +323,37 @@ secrets-baseline: ## Regenerate detect-secrets baseline (after reviewing & appro
 .PHONY: audit-secrets
 audit-secrets: ## Interactive audit: mark detected secrets as real or false-positive
 	.venv/bin/detect-secrets audit .secrets.baseline
+
+# =============================================================================
+# Cloud Deployment
+# =============================================================================
+
+.PHONY: deploy-gcp-dev
+deploy-gcp-dev: ## Deploy all backend services to GCP Cloud Run (dev)
+	./deploy-gcp.sh dev
+
+.PHONY: deploy-gcp-prod
+deploy-gcp-prod: ## Deploy all backend services to GCP Cloud Run (prod)
+	./deploy-gcp.sh prod
+
+.PHONY: deploy-vercel-preview
+deploy-vercel-preview: ## Deploy both Next.js frontends to Vercel (preview)
+	./deploy-vercel.sh preview
+
+.PHONY: deploy-vercel-prod
+deploy-vercel-prod: ## Deploy both Next.js frontends to Vercel (production)
+	./deploy-vercel.sh production
+
+.PHONY: deploy-all-dev
+deploy-all-dev: deploy-gcp-dev deploy-vercel-preview ## Full platform deploy to dev (GCP backends + Vercel frontends)
+
+.PHONY: deploy-all-prod
+deploy-all-prod: deploy-gcp-prod deploy-vercel-prod ## Full platform deploy to production
+
+.PHONY: cloud-status
+cloud-status: ## Show live Cloud Run service URLs and status
+	@echo "=== Cloud Run Services ==="
+	@gcloud run services list --platform=managed --region=$${GCP_REGION:-us-central1} \
+	  --filter="metadata.labels.platform=crp" \
+	  --format="table(metadata.name,status.url,status.conditions[0].type)" 2>/dev/null || \
+	  echo "  (gcloud not configured — set GCP_PROJECT_ID and run: gcloud auth login)"

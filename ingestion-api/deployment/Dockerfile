@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install dependencies
-COPY requirements.txt .
+COPY ingestion-api/requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Final stage
@@ -26,7 +26,7 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 # Copy application code
-COPY src/ ./src/
+COPY ingestion-api/src/ ./src/
 
 # Create __init__.py if it doesn't exist
 RUN touch src/__init__.py
