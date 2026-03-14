@@ -1,0 +1,29 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm ci",
+  "outputDirectory": ".next",
+  "regions": ["iad1"],
+  "env": {
+    "NEXTAUTH_URL": "https://analytics.your-domain.com"
+  },
+  "build": {
+    "env": {
+      "NEXT_PUBLIC_DECISION_API_URL": "@crp_decision_api_url",
+      "NEXT_PUBLIC_AGENT_API_URL":    "@crp_agent_api_url",
+      "NEXTAUTH_URL": "https://analytics.your-domain.com"
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Frame-Options",        "value": "DENY" },
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy",        "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy",     "value": "camera=(), microphone=(), geolocation=()" }
+      ]
+    }
+  ]
+}

@@ -14,10 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 # Copy source
 COPY . .
 
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app:/app/decision-api
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8081
 
-CMD ["uvicorn", "decision-api.src.main:app", "--host", "0.0.0.0", "--port", "8081"]
+WORKDIR /app/decision-api
+CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8081"]
