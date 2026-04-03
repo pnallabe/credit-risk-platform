@@ -48,7 +48,27 @@ DB_URL = os.getenv(
     "DATABASE_URL",
     "sqlite+aiosqlite:///./decision_audit.db",
 )
-JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
+
+# ---------------------------------------------------------------------------
+# CRIT-01: JWT_SECRET must be explicitly set to a non-default strong secret.
+# The API will refuse to start if the variable is absent or left as the
+# dev placeholder — preventing an authentication bypass in misconfigured envs.
+# ---------------------------------------------------------------------------
+_JWT_SECRET_RAW = os.getenv("JWT_SECRET", "")
+_JWT_SECRET_DEV_PLACEHOLDER = "your-secret-key-change-in-production"  # pragma: allowlist secret
+if not _JWT_SECRET_RAW:
+    raise RuntimeError(
+        "[CRIT-01] JWT_SECRET environment variable is not set. "
+        "Generate a strong secret and configure it via Secret Manager or .env "
+        "before starting this service."
+    )
+if _JWT_SECRET_RAW == _JWT_SECRET_DEV_PLACEHOLDER:
+    raise RuntimeError(
+        "[CRIT-01] JWT_SECRET is still the development placeholder value. "
+        "Generate a strong, unique secret and set JWT_SECRET before deploying."
+    )
+JWT_SECRET: str = _JWT_SECRET_RAW
+
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 FRAUD_MODEL_PATH = os.getenv("FRAUD_MODEL_PATH", str(ROOT / "models" / "fraud_detection" / "fraud_model_v1.pkl"))
 RISK_MODEL_PATH = os.getenv("RISK_MODEL_PATH", str(ROOT / "models" / "credit_risk" / "risk_model_v1.pkl"))
@@ -56,25 +76,48 @@ RISK_MODEL_PATH = os.getenv("RISK_MODEL_PATH", str(ROOT / "models" / "credit_ris
 FEATURE_CONFIG = FeaturePipelineConfig()
 PRICING_CONFIG = PricingConfig()
 
-# Pre-load models at startup (best effort)
+# ---------------------------------------------------------------------------
+# CRIT-04: Semaphore cap for the batch endpoint.  Without this, a 1000-item
+# batch launches 1000 concurrent pipelines, exhausting DB connections and
+# Python threadpool workers and cascading into 500s for real-time traffic.
+# Adjust BATCH_CONCURRENCY_LIMIT via env; default is 50 concurrent pipelines.
+# ---------------------------------------------------------------------------
+BATCH_CONCURRENCY_LIMIT: int = int(os.getenv("BATCH_CONCURRENCY_LIMIT", "50"))
+_batch_semaphore: Optional[asyncio.Semaphore] = None
+
+# Pre-load models at startup (fail-hard — see CRIT-03)
 _fraud_model: Any = None
 _risk_model: Any = None
 
 
 def _load_models() -> None:
+    """Load both models at startup.  Raises RuntimeError if either fails.
+
+    CRIT-03: The API must not start — or serve any traffic — when a required
+    model artifact is unavailable.  Swallowing load errors allows the service
+    to pass health checks while silently returning junk (or 500s) for every
+    real decision request.
+    """
     global _fraud_model, _risk_model
+    import joblib  # noqa: PLC0415
+
     try:
-        import joblib
         _fraud_model = joblib.load(FRAUD_MODEL_PATH)
         logger.info("Fraud model loaded from %s", FRAUD_MODEL_PATH)
     except Exception as exc:
-        logger.warning("Could not load fraud model: %s", exc)
+        raise RuntimeError(
+            f"[CRIT-03] Failed to load fraud model from '{FRAUD_MODEL_PATH}': {exc}. "
+            "Verify the artifact path and set FRAUD_MODEL_PATH if needed."
+        ) from exc
+
     try:
-        import joblib
         _risk_model = joblib.load(RISK_MODEL_PATH)
         logger.info("Credit risk model loaded from %s", RISK_MODEL_PATH)
     except Exception as exc:
-        logger.warning("Could not load credit risk model: %s", exc)
+        raise RuntimeError(
+            f"[CRIT-03] Failed to load credit risk model from '{RISK_MODEL_PATH}': {exc}. "
+            "Verify the artifact path and set RISK_MODEL_PATH if needed."
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -89,17 +132,44 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+# ---------------------------------------------------------------------------
+# CRIT-02: Restrict CORS to explicitly allow-listed origins.
+# allow_origins=["*"] on a financial decisioning API allows any website to
+# make authenticated cross-origin requests and read PD scores / reason codes.
+# Set CORS_ALLOWED_ORIGINS to a comma-separated list of trusted origins,
+# e.g. "https://app.yourdomain.com,https://analytics.yourdomain.com".
+# ---------------------------------------------------------------------------
+_cors_raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
+_CORS_ORIGINS: List[str] = (
+    [o.strip() for o in _cors_raw.split(",") if o.strip()]
+    if _cors_raw
+    else []
+)
+if not _CORS_ORIGINS:
+    logger.warning(
+        "[CRIT-02] CORS_ALLOWED_ORIGINS is not configured — "
+        "cross-origin requests will be blocked for all origins. "
+        "Set CORS_ALLOWED_ORIGINS to allow your front-end domains."
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_CORS_ORIGINS,
+    allow_origin_regex=None,
+    allow_methods=["GET", "POST", "PATCH"],
+    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=False,
 )
 
 
 @app.on_event("startup")
 async def startup_event() -> None:
+    # CRIT-03: raises RuntimeError → service refuses to start if models absent
     _load_models()
+    # CRIT-04: create semaphore inside the running event loop
+    global _batch_semaphore
+    _batch_semaphore = asyncio.Semaphore(BATCH_CONCURRENCY_LIMIT)
+    logger.info("Batch concurrency limit: %d concurrent pipelines", BATCH_CONCURRENCY_LIMIT)
 
 
 # ---------------------------------------------------------------------------
@@ -112,10 +182,12 @@ bearer_scheme = HTTPBearer(auto_error=False)
 async def verify_bearer(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme),
 ) -> Dict[str, Any]:
-    """Verify Bearer JWT token.  Skips auth if JWT_SECRET is the default dev key."""
-    if JWT_SECRET == "your-secret-key-change-in-production":  # pragma: allowlist secret
-        return {"sub": "dev-user", "auth_type": "dev"}
+    """Verify Bearer JWT token.
 
+    CRIT-01: The development bypass (skipping auth when JWT_SECRET matches the
+    placeholder) has been removed.  The secret is now validated at startup so
+    this function always enforces authentication.
+    """
     if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -160,6 +232,15 @@ class LoanApplicationRequest(BaseModel):
     num_open_accounts: int = Field(default=0, ge=0)
     num_derogatory_marks: int = Field(default=0, ge=0)
     months_since_last_delinquency: Optional[int] = None
+    # CRIT-05: borrower state is required to enforce state-level APR caps.
+    # Use ISO 3166-2 two-letter state/territory codes (e.g. "CA", "IL", "CO").
+    borrower_state: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        max_length=2,
+        pattern="^[A-Z]{2}$",
+        description="ISO 3166-2 two-letter US state code used for APR cap enforcement.",
+    )
 
 
 class ExplanationFactor(BaseModel):
@@ -239,12 +320,13 @@ async def _run_pipeline(app_req: LoanApplicationRequest) -> DecisionResponse:
     pd_score = float(credit_df["pd_score"].iloc[0])
     pd_band = str(credit_df["pd_band"].iloc[0])
 
-    # 4. Pricing
+    # 4. Pricing (CRIT-05: pass borrower_state so state APR cap is applied)
     pricing_result = calculate_pricing(
         pd_score=pd_score,
         fraud_flag=fraud_flag_str,
         loan_amount=float(app_req.loan_amount),
         config=PRICING_CONFIG,
+        borrower_state=app_req.borrower_state,
     )
 
     # 5. Decision engine
@@ -366,7 +448,14 @@ async def batch_decisions(
             detail="Batch must contain at least 1 application.",
         )
 
-    tasks = [_run_pipeline(app) for app in applications]
+    # CRIT-04: Gate each pipeline invocation through the module-level semaphore
+    # so that at most BATCH_CONCURRENCY_LIMIT pipelines run simultaneously,
+    # protecting the DB connection pool and model inference threads.
+    async def _bounded(app_req: LoanApplicationRequest) -> DecisionResponse:
+        async with _batch_semaphore:  # type: ignore[union-attr]
+            return await _run_pipeline(app_req)
+
+    tasks = [_bounded(app) for app in applications]
     results: List[DecisionResponse] = await asyncio.gather(*tasks)
 
     approved = sum(1 for r in results if r.decision == "APPROVE")
