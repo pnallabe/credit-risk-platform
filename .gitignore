@@ -18,6 +18,7 @@ credentials.json
 service_account*.json
 application_default_credentials.json
 gcloud_*.json
+.gcp-sa-key-*.json
 .gcp/
 .aws/
 
@@ -131,3 +132,8 @@ Thumbs.db
 # detect-secrets baseline (ok to commit — contains no real secrets)
 # ---------------------------------------------------------------------------
 # .secrets.baseline   <-- intentionally tracked
+
+# Large data files
+data/Freddiemac/*.zip
+data/Freddiemac/*.csv
+data/Freddiemac/*.txt

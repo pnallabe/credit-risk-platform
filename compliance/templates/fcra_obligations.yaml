@@ -1,0 +1,64 @@
+# FCRA Consumer Reporting Obligations — Section 23.9
+# -----------------------------------------------------
+# This file documents the platform's obligations under the Fair Credit Reporting
+# Act (FCRA), 15 U.S.C. § 1681 et seq., when using consumer report data from
+# credit bureaus in credit origination and account management decisions.
+#
+# Any deviation from the permissible-purpose list below requires legal sign-off
+# before the use case goes to production.
+
+bureau_data_usage:
+  permissible_purpose:
+    - "credit_origination"     # 15 U.S.C. § 1681b(a)(3)(A)
+    - "account_review"         # 15 U.S.C. § 1681b(a)(3)(A) — existing account
+
+  prohibited_uses:
+    - "marketing_without_consent"
+    - "employment_screening"
+    - "insurance_underwriting_without_consent"
+    - "tenant_screening"
+
+  adverse_action_obligations:
+    # Triggered whenever a bureau pull contributed to:
+    #   - DECLINE decision
+    #   - MANUAL_REVIEW decision (if ultimately declined)
+    #   - APR or credit-limit counter-offer materially worse than originally sought
+    trigger: "any bureau pull contributing to DECLINE or MANUAL_REVIEW"
+    notice_deadline_days: 30   # FCRA § 615(a): must notify within 30 days
+    required_fields:
+      - "consumer_reporting_agency_name"
+      - "consumer_reporting_agency_address"
+      - "consumer_report_right_to_dispute_url"
+      - "free_disclosure_phone"
+    # These four fields are validated by compliance.third_party_model_registry.check_fcra_aa_fields()
+
+  dispute_response_sla_days: 30    # FCRA § 611 — must complete reinvestigation
+  reinvestigation_sla_days: 30
+
+  # Oral notices: only permissible for applications received electronically
+  # and only if notice is delivered in the same medium.  WEB / MOBILE acceptable.
+  # PAPER / AGENT applications require written notice.
+  oral_notice_channels: ["WEB", "MOBILE"]
+
+identity_theft_provisions:
+  # FCRA § 605B — block of information resulting from alleged ID theft
+  fraud_alert_duration_days: 90       # initial fraud alert; extended = 7 years
+  credit_freeze_honour_required: true # § 605A — platform must honour security freezes
+  active_duty_alert_duration_days: 12 # § 605A(b)(4) active-duty alert
+
+permissible_purpose_log:
+  # Every bureau pull must be logged with:
+  # - permissible_purpose code
+  # - applicant_id_hash (SHA-256)
+  # - pull_timestamp
+  # - bureau_name
+  # - decision_id (FK to audit.audit_log)
+  table: "audit.bureau_pull_log"
+  retention_years: 7       # FCRA does not specify; platform default = 7 years (> 2-year ECOA)
+
+furnisher_obligations:
+  # If the platform reports account data to bureaus (§ 623):
+  enabled: false           # Set to true when bureau reporting is activated
+  accuracy_programme_required: true
+  dispute_investigation_sla_days: 30
+  correction_furnish_deadline_days: 30

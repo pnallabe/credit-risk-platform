@@ -104,7 +104,7 @@ export default function FairLendingPage() {
                 <YAxis tick={{ fontSize: 10 }} domain={[0, 100]} />
                 <Tooltip formatter={(v: number) => `${v.toFixed(1)}%`} />
                 <ReferenceLine y={62.5} stroke="#3b82f6" strokeDasharray="4 2" label={{ value: "Avg", fill: "#3b82f6", fontSize: 10 }} />
-                <Bar dataKey="approval_rate" fill={(entry: { approval_rate: number }) => entry.approval_rate < 50 ? "#ef4444" : "#22c55e"} radius={[4, 4, 0, 0]} />
+                <Bar dataKey="approval_rate" fill="#22c55e" radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           </div>

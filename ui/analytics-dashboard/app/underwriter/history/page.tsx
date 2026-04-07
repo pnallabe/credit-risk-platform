@@ -105,7 +105,7 @@ export default function UnderwriterHistoryPage() {
     const headers = ["application_id", "decision", "loan_amount", "pd_score", "reviewer", "review_complete_at", "created_at"];
     const csvRows = [
       headers.join(","),
-      ...rows.map((r) => headers.map((h) => JSON.stringify((r.original as Record<string, unknown>)[h] ?? "")).join(",")),
+      ...rows.map((r) => headers.map((h) => JSON.stringify((r.original as unknown as Record<string, unknown>)[h] ?? "")).join(",")),
     ];
     const blob = new Blob([csvRows.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);

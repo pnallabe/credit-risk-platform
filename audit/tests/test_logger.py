@@ -26,6 +26,8 @@ from audit.logger import (
 
 # Use SQLite in-memory for tests
 DB_URL = "sqlite+aiosqlite:///:memory:"
+# Tenant ID used by all audit-log integration tests
+TENANT_ID = "test-tenant-001"
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -146,6 +148,7 @@ class TestLogDecision:
             model_versions=sample_model_versions,
             input_features=sample_input_features,
             db_url=DB_URL,
+            tenant_id=TENANT_ID,
         )
         assert isinstance(log_id, str)
         assert len(log_id) == 36  # UUID format
@@ -157,10 +160,10 @@ class TestLogDecision:
         sample_model_versions,
     ) -> None:
         id1 = await log_decision(
-            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL
+            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID
         )
         id2 = await log_decision(
-            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL
+            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID
         )
         assert id1 != id2
 
@@ -171,9 +174,9 @@ class TestLogDecision:
         sample_model_versions,
     ) -> None:
         log_id = await log_decision(
-            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL
+            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID
         )
-        record = await get_audit_record("app-test-001", DB_URL)
+        record = await get_audit_record("app-test-001", DB_URL, TENANT_ID)
         assert record is not None
         assert record["application_id"] == "app-test-001"
 
@@ -184,9 +187,9 @@ class TestLogDecision:
         sample_model_versions,
     ) -> None:
         await log_decision(
-            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL
+            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID
         )
-        record = await get_audit_record("app-test-001", DB_URL)
+        record = await get_audit_record("app-test-001", DB_URL, TENANT_ID)
         assert record["decision_output"] == "APPROVE"
 
     async def test_reason_codes_stored_as_list(
@@ -196,9 +199,9 @@ class TestLogDecision:
         sample_model_versions,
     ) -> None:
         await log_decision(
-            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL
+            sample_decision_result, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID
         )
-        record = await get_audit_record("app-test-001", DB_URL)
+        record = await get_audit_record("app-test-001", DB_URL, TENANT_ID)
         assert isinstance(record["reason_codes"], list)
 
     async def test_pii_masked_before_storage(
@@ -207,8 +210,8 @@ class TestLogDecision:
         sample_model_versions,
     ) -> None:
         dr = {"application_id": "app-pii-test", "decision": "REJECT", "reason_codes": [], "decision_latency_ms": 0}
-        await log_decision(dr, "1.0.0", sample_model_versions, sample_input_features, DB_URL)
-        record = await get_audit_record("app-pii-test", DB_URL)
+        await log_decision(dr, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID)
+        record = await get_audit_record("app-pii-test", DB_URL, TENANT_ID)
         # SSN should be hashed, not original
         stored_features = record["input_features"]
         assert stored_features.get("ssn") != "123-45-6789"
@@ -225,8 +228,8 @@ class TestLogDecision:
             "reason_codes": [],
             "decision_latency_ms": 450,
         }
-        await log_decision(dr, "1.0.0", sample_model_versions, sample_input_features, DB_URL)
-        record = await get_audit_record("app-latency-test", DB_URL)
+        await log_decision(dr, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID)
+        record = await get_audit_record("app-latency-test", DB_URL, TENANT_ID)
         assert record["decision_latency_ms"] == 450
 
     async def test_accepts_dataclass_like_result(
@@ -248,11 +251,11 @@ class TestLogDecision:
                     self.reason_codes = ["AA05"]
 
         dr = FakeDecision()
-        log_id = await log_decision(dr, "1.0.0", sample_model_versions, sample_input_features, DB_URL)
+        log_id = await log_decision(dr, "1.0.0", sample_model_versions, sample_input_features, DB_URL, TENANT_ID)
         assert isinstance(log_id, str)
 
     async def test_get_audit_record_returns_none_for_missing(self) -> None:
-        record = await get_audit_record("nonexistent-app", DB_URL)
+        record = await get_audit_record("nonexistent-app", DB_URL, TENANT_ID)
         # May return None if table doesn't have that record
         if record is not None:
             assert record["application_id"] != "nonexistent-app" or record is None

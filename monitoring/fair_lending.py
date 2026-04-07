@@ -17,6 +17,15 @@ Metrics computed
 3. Geographic Bias
    Compare approval rates by state; flag states with rate > 1.5σ from mean.
 
+BISG Proxy Auto-Detection (P1.5)
+---------------------------------
+When ``decisions_df`` does NOT contain a ``demographic_group`` column (or the
+requested *protected_col* is absent) but DOES contain both a ``surname`` and a
+``census_tract`` column, the module automatically applies the BISG proxy
+methodology (see ``monitoring.bisg``) to estimate race/ethnicity.  The
+``FairLendingReport`` will include ``proxy_methodology="BISG"`` to satisfy
+CFPB examination requirements for voluntary-basis or indirect lending.
+
 Public API
 ----------
 >>> from monitoring.fair_lending import analyze_fair_lending, FairLendingReport
@@ -115,6 +124,10 @@ class FairLendingReport:
     report_timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     n_total: int = 0
     n_approved: int = 0
+    # ── P1.5: BISG proxy fields ──────────────────────────────────────────────
+    proxy_methodology: Optional[str] = None  # "BISG" | "self_reported" | None
+    proxy_applied: bool = False              # True when BISG was auto-applied
+    weighted_dir_calculation: Optional[float] = None  # probability-weighted DIR
 
 
 # ---------------------------------------------------------------------------
@@ -234,6 +247,8 @@ def analyze_fair_lending(
     decision_col: str = "decision",
     state_col: str = "state",
     output_dir: Optional[str] = None,
+    surname_col: str = "surname",
+    tract_col: str = "census_tract",
 ) -> FairLendingReport:
     """Run a full fair lending analysis on a decisions DataFrame.
 
@@ -246,6 +261,8 @@ def analyze_fair_lending(
     protected_col:
         Column name containing the demographic group label
         (e.g., ``"race"``, ``"zip_group"``, ``"income_band"``).
+        If this column is absent but *surname_col* and *tract_col* are
+        present, BISG proxy will be applied automatically.
     control_group:
         The value in *protected_col* that represents the reference group
         (e.g., ``"white"``, ``"high_income"``).
@@ -257,6 +274,10 @@ def analyze_fair_lending(
     output_dir:
         If provided, saves the report as JSON to
         ``{output_dir}/fair_lending_{date}.json``.
+    surname_col:
+        Column name for applicant surnames (used for BISG proxy).
+    tract_col:
+        Column name for census tracts (used for BISG proxy).
 
     Returns
     -------
@@ -264,11 +285,38 @@ def analyze_fair_lending(
     """
     if decision_col not in decisions_df.columns:
         raise ValueError(f"Decision column '{decision_col}' not found in DataFrame.")
-    if protected_col not in decisions_df.columns:
-        raise ValueError(f"Protected column '{protected_col}' not found in DataFrame.")
+
+    # ── P1.5: Auto-apply BISG proxy when protected_col is absent ──────────
+    proxy_applied = False
+    proxy_methodology: Optional[str] = None
+    working_df = decisions_df.copy()
+
+    if protected_col not in working_df.columns:
+        if surname_col in working_df.columns:
+            logger.info(
+                "Column '%s' not found; auto-applying BISG proxy using '%s' and '%s'.",
+                protected_col, surname_col, tract_col,
+            )
+            from monitoring.bisg import add_bisg_columns
+            working_df = add_bisg_columns(
+                working_df,
+                surname_col=surname_col,
+                tract_col=tract_col if tract_col in working_df.columns else None,
+            )
+            # Map BISG proxy_group → protected_col
+            working_df[protected_col] = working_df["proxy_group"]
+            proxy_applied = True
+            proxy_methodology = "BISG"
+        else:
+            raise ValueError(
+                f"Protected column '{protected_col}' not found in DataFrame, "
+                f"and no '{surname_col}' column available for BISG proxy."
+            )
+    else:
+        proxy_methodology = "self_reported"
 
     # Identify protected group (all groups != control_group)
-    unique_groups = decisions_df[protected_col].dropna().unique().tolist()
+    unique_groups = working_df[protected_col].dropna().unique().tolist()
     protected_groups = [g for g in unique_groups if str(g) != control_group]
     if not protected_groups:
         raise ValueError(f"No protected groups found (all values == '{control_group}').")
@@ -276,19 +324,40 @@ def analyze_fair_lending(
     # Use first non-control group as the primary protected group for DIR
     primary_protected = str(protected_groups[0])
 
-    n_total = len(decisions_df)
-    n_approved = int((decisions_df[decision_col].str.upper() == "APPROVE").sum())
+    n_total = len(working_df)
+    n_approved = int((working_df[decision_col].str.upper() == "APPROVE").sum())
 
     # DIR
     dir_score, prot_rate, ctrl_rate = _compute_dir(
-        decisions_df, protected_col, primary_protected, control_group, decision_col
+        working_df, protected_col, primary_protected, control_group, decision_col
     )
 
     # Approval parity
-    p_value, parity_flag = _compute_approval_parity(decisions_df, protected_col, decision_col)
+    p_value, parity_flag = _compute_approval_parity(working_df, protected_col, decision_col)
 
     # Geographic flags
-    geo_flags, state_rates = _compute_geographic_flags(decisions_df, state_col, decision_col)
+    geo_flags, state_rates = _compute_geographic_flags(working_df, state_col, decision_col)
+
+    # ── P1.5: Probability-weighted DIR (BISG only) ─────────────────────────
+    weighted_dir: Optional[float] = None
+    if proxy_applied:
+        from monitoring.bisg import RACE_COLS
+        ctrl_col = f"bisg_{control_group}" if f"bisg_{control_group}" in working_df.columns else None
+        prot_col = f"bisg_{primary_protected}" if f"bisg_{primary_protected}" in working_df.columns else None
+        if ctrl_col and prot_col and decision_col in working_df.columns:
+            approved_mask = working_df[decision_col].str.upper() == "APPROVE"
+            w_prot_approved = float(
+                (working_df.loc[approved_mask, prot_col]).sum()
+            )
+            w_prot_total = float(working_df[prot_col].sum())
+            w_ctrl_approved = float(
+                (working_df.loc[approved_mask, ctrl_col]).sum()
+            )
+            w_ctrl_total = float(working_df[ctrl_col].sum())
+            if w_ctrl_total > 0 and w_prot_total > 0 and w_ctrl_approved > 0:
+                w_prot_rate = w_prot_approved / w_prot_total
+                w_ctrl_rate = w_ctrl_approved / w_ctrl_total
+                weighted_dir = round(w_prot_rate / w_ctrl_rate, 4) if w_ctrl_rate > 0 else None
 
     report = FairLendingReport(
         dir_score=dir_score,
@@ -303,15 +372,19 @@ def analyze_fair_lending(
         state_approval_rates=state_rates,
         n_total=n_total,
         n_approved=n_approved,
+        proxy_methodology=proxy_methodology,
+        proxy_applied=proxy_applied,
+        weighted_dir_calculation=weighted_dir,
     )
     report.summary_text = _build_summary_text(report)
 
     logger.info(
-        "Fair lending analysis complete: DIR=%.4f (flag=%s), p-value=%.4f (flag=%s)",
+        "Fair lending analysis complete: DIR=%.4f (flag=%s), p-value=%.4f (flag=%s), proxy=%s",
         dir_score if dir_score else -1,
         report.dir_flag,
         p_value if p_value else -1,
         parity_flag,
+        proxy_methodology,
     )
 
     if output_dir:

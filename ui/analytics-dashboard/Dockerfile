@@ -26,7 +26,7 @@ ARG NEXT_PUBLIC_AGENT_API_URL=http://localhost:8082
 ENV NEXT_PUBLIC_DECISION_API_URL=${NEXT_PUBLIC_DECISION_API_URL}
 ENV NEXT_PUBLIC_AGENT_API_URL=${NEXT_PUBLIC_AGENT_API_URL}
 
-RUN npm run build
+RUN npm run build && mkdir -p public
 
 # ────────────────────────────────────────────────
 # 3. Production image

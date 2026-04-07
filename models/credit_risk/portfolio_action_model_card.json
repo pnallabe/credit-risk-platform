@@ -1,0 +1,118 @@
+{
+  "model_name": "cc_portfolio_action",
+  "model_type": "gradient_boosting_classifier_5class",
+  "version": "1.0.0",
+  "trained_at": "<ISO-8601 — populated by train_portfolio_action_model.py>",
+  "artifact_path": "models/cc_portfolio_action_model.pkl",
+  "bq_dataset": "ai-risk-workflow.credit_risk_model_dev",
+  "feature_version": "portfolio_features_v1",
+  "output_classes": ["HOLD", "CLI", "CLD", "APR_UP", "APR_DOWN"],
+  "class_weight": "balanced",
+  "training_data_period": "2015-01-01 to 2022-12-31",
+  "oos_eval_period": "2023-01-01 to 2024-12-31",
+  "train_rows": null,
+  "intended_use": "Proactive credit line and APR management for active credit card accounts",
+  "primary_decision_owner": "Credit Risk Portfolio Management",
+  "out_of_scope": [
+    "New customer origination / acquisition decisions",
+    "Fraud or identity theft detection",
+    "Collections strategy or charge-off prediction",
+    "Commercial / business credit card accounts"
+  ],
+  "performance_metrics": {
+    "cli_precision_oos": null,
+    "cld_recall_oos": null,
+    "macro_auc_oos": null,
+    "guardrail_coverage_pct": 100.0,
+    "notes": "Populated by train_portfolio_action_model.py at training time"
+  },
+  "governance_thresholds": {
+    "min_cli_precision": 0.72,
+    "min_cld_recall": 0.80,
+    "min_macro_auc": 0.82,
+    "min_guardrail_coverage": 1.00,
+    "max_feature_psi": 0.20
+  },
+  "hyperparameters": {
+    "n_estimators": 300,
+    "max_depth": 5,
+    "learning_rate": 0.05,
+    "subsample": 0.8,
+    "random_state": 42
+  },
+  "feature_set": {
+    "feature_version": "portfolio_features_v1",
+    "total_features": 44,
+    "groups": {
+      "payment_behaviour": 9,
+      "spend_behaviour": 11,
+      "utilisation": 8,
+      "risk_signals": 10,
+      "account_tenure": 6
+    },
+    "key_features": [
+      "payment_rate_12m_avg",
+      "utilisation_12m_avg",
+      "bureau_score_current",
+      "bureau_score_3m_change",
+      "consecutive_missed_pay",
+      "full_pay_months_12m",
+      "dpd_months_12m",
+      "current_delinquency_status",
+      "spend_growth_3m_vs_12m",
+      "cash_advance_pct_12m"
+    ]
+  },
+  "fairness_assessment": {
+    "disparate_impact_ratio_cld": null,
+    "disparate_impact_ratio_apr_up": null,
+    "cli_rate_by_gender": null,
+    "adverse_action_notice_required_for_cld": true,
+    "adverse_action_notice_required_for_apr_up": true,
+    "ecoa_reg_b_compliant": null,
+    "fair_lending_reviewed": false,
+    "notes": "Fair lending analysis must be completed before Production promotion (SR 11-7)"
+  },
+  "guardrail_rules": [
+    "DPD60+ (delinquency_status >= 2) → CLD or HOLD only; CLI and APR_DOWN blocked",
+    "Charged-off account → HOLD only; no other action permitted",
+    "3+ consecutive missed payments → CLD",
+    "Bureau score < 560 → CLI and APR_DOWN blocked",
+    "industry_worsening scenario: CLI blocked if utilisation_12m_avg > 70% or bureau_score_3m_change < -30",
+    "recession scenario: CLI and APR_DOWN both blocked portfolio-wide",
+    "base scenario override: full-payer (full_pay_months_12m >= 11) + spend growth > 10% → APR_DOWN for retention",
+    "CNPV gate: any CLI with scenario_weighted CNPV delta < 0 reverted to HOLD"
+  ],
+  "regulatory_compliance": {
+    "tila_reg_z": "APR_UP actions require 45-day advance change-in-terms notice",
+    "ecoa_reg_b": "CLD and APR_UP actions must queue adverse action notice with >= 2 reason codes within 30 days",
+    "scra": "Active military accounts: APR increases blocked; CLD only with notification flag",
+    "usury": "APR_UP cannot push account APR above applicable state usury cap",
+    "udaap": "All actions include human-readable reason_summary",
+    "disparate_impact": "CLD disparate impact ratio (protected/control) must be >= 0.80 before batch execution",
+    "policy_versioning": "policy_version used for each batch must be recorded and resolve to an approved_by entry"
+  },
+  "limitations": [
+    "Trained on synthetic data; annual recalibration on live portfolio mandatory post-production",
+    "HOLD is dominant class (>90% of accounts); class_weight=balanced required to prevent HOLD bias",
+    "Feature engineering requires 12 months of statement history; new accounts (<12 months) should default to HOLD",
+    "Scenario probabilities (base 55%, worsening 30%, recession 15%) are static — should reflect macro outlook at review time"
+  ],
+  "monitoring": {
+    "report_module": "monitoring/cc_portfolio_monitor.py",
+    "frequency": "Monthly",
+    "alert_thresholds": {
+      "action_rate_drift_pp": 10.0,
+      "feature_psi_max": 0.20,
+      "guardrail_override_rate_max": 0.15,
+      "cnpv_realization_ratio_min": 0.65,
+      "adverse_action_coverage_min": 1.00
+    }
+  },
+  "sklearn_version": null,
+  "review_cycle_months": 6,
+  "sr11_7_stage": "development",
+  "approved_by": null,
+  "validator": null,
+  "next_review_date": null
+}

@@ -1,0 +1,53 @@
+# Regulatory Change Impact Assessment Template — Section 23.4
+# -----------------------------------------------------------
+# Instructions:
+#   1. Create one YAML file per horizon_id.
+#   2. Complete all fields within 5 business days of horizon_id creation.
+#   3. File name convention: impact_<horizon_id>.yaml
+#   4. All approvals must be captured before remediation work begins.
+#   5. If model_retraining_required or policy_lifecycle_required is true,
+#      initiate the full 7-stage policy lifecycle (Section 22.2) immediately.
+
+horizon_id: ""
+regulation: ""          # e.g. "MLA", "SCRA", "ECOA", "TILA" ...
+jurisdiction: ""        # "FEDERAL" or US state abbreviation e.g. "CA"
+change_summary: ""      # Plain-English description of what's changing
+effective_date: ""      # ISO date: YYYY-MM-DD
+
+impact_assessment:
+  affected_components:
+    - ""   # e.g. "cc_origination_policy.py", "config/usury_caps.yaml"
+
+  threshold_changes_required:
+    - threshold_id: ""
+      current_value: null
+      new_value: null
+
+  model_retraining_required: false
+  # If true: full 7-stage policy lifecycle required (Section 22.2).
+  # Model must not ship to production without Stage 6 committee approval.
+  policy_lifecycle_required: false
+
+  estimated_remediation_days: null
+  ci_cd_changes_required: false
+  fair_lending_impact: false
+  consumer_disclosure_update_required: false  # TILA schumer box / Reg Z
+
+  risk_if_not_remediated: ""
+  # One of: "REGULATORY_VIOLATION" | "CONSUMER_HARM" | "REPUTATIONAL" | "OPERATIONAL"
+
+  # Detailed narrative for the CRO / board package
+  narrative_summary: ""
+
+approvals:
+  compliance_officer: ""      # email address
+  legal_counsel: ""           # email address
+  cro: ""                     # email address
+  assessment_date: ""         # ISO date: YYYY-MM-DD
+
+remediation:
+  tracking_status: "BACKLOG"  # BACKLOG | IN_REMEDIATION | TESTED | DEPLOYED
+  assigned_to: ""
+  pr_url: ""
+  target_completion_date: ""
+  completed_date: ""

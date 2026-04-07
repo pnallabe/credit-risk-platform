@@ -22,12 +22,12 @@ import sys
 from pathlib import Path
 from typing import Union
 
-import joblib
 import pandas as pd
 
 # Project root on path
 sys.path.insert(0, str(Path(__file__).parents[2]))
 from feature_pipeline.features import FeaturePipelineConfig, compute_features  # noqa: E402
+from models.model_loader import get_or_load  # noqa: E402
 
 MODEL_VERSION = "v1"
 _FEATURE_CONFIG = FeaturePipelineConfig()
@@ -79,7 +79,8 @@ def predict_fraud(
     if _model is None:
         if model_path is None:
             model_path = Path(__file__).parents[2] / "models" / "fraud_detection" / "fraud_model_v1.pkl"
-        model = joblib.load(model_path)
+        # P1.4: use process-level cache — no per-request disk I/O on hot path
+        model = get_or_load(model_path, version=MODEL_VERSION)
     else:
         model = _model
 
