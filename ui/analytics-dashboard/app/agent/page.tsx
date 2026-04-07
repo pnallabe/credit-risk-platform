@@ -1,7 +1,8 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
 import { DashboardShell } from "@/components/DashboardShell";
 import ReactMarkdown from "react-markdown";
 
@@ -91,13 +92,12 @@ function MessageBubble({ msg }: { msg: Message }) {
 }
 
 export default function AgentChatPage() {
-  const { data: session } = useSession();
   const [persona, setPersona] = useState<Persona>("data_analyst");
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
       role: "assistant",
-      content: `Hi ${session?.user?.name ?? "there"}! I'm your **Credit Risk AI Assistant**. Ask me about portfolio metrics, model performance, fair lending compliance, or data quality. I can run SQL queries on your behalf.`,
+      content: `Hi there! I'm your **Credit Risk AI Assistant**. Ask me about portfolio metrics, model performance, fair lending compliance, or data quality. I can run SQL queries on your behalf.`,
     },
   ]);
   const [input, setInput] = useState("");
@@ -217,7 +217,7 @@ export default function AgentChatPage() {
   };
 
   return (
-    <DashboardShell role="data_scientist" userName={session?.user?.name ?? "User"}>
+    <DashboardShell role="data_scientist" userName="User">
       <div className="flex flex-col h-[calc(100vh-140px)] max-w-4xl mx-auto">
         {/* Header */}
         <div className="flex items-center justify-between mb-4">

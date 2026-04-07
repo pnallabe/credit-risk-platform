@@ -1,0 +1,53 @@
+{
+  "model_name": "cc_origination_valuation",
+  "model_type": "deterministic_cnpv_with_scenario_overlay",
+  "version": "1.0.0",
+  "trained_at": "2026-04-05T00:00:00Z",
+  "bq_dataset": "ai-risk-workflow.credit_risk_model_dev",
+  "pd_model_dependency": "cc_pd_model_v1",
+  "scenario_set": ["base", "industry_worsening", "recession"],
+  "probability_weights": [0.55, 0.30, 0.15],
+  "ftp_benchmark_rate_pct": 5.30,
+  "wacc_pct": 10.5,
+  "lgd_default": 0.65,
+  "cet1_target_pct": 12.5,
+  "intended_use": "Credit card origination acquisition decision support",
+  "out_of_scope": ["Mortgage pricing", "Auto lending", "BNPL"],
+  "training_data_period": "2015-01-01 to 2022-12-31",
+  "oos_eval_period": "2023-01-01 to 2024-12-31",
+  "performance_metrics": {
+    "cnpv_realised_ratio": null,
+    "approval_rate_base_pct": null,
+    "approval_rate_recession_pct": null,
+    "ftp_psi": null,
+    "monotone_pct": null
+  },
+  "fairness_assessment": {
+    "disparate_impact_ratio_min": null,
+    "approval_rate_by_gender": {},
+    "approval_rate_by_race_proxy": {},
+    "adverse_action_notice_required": true
+  },
+  "limitations": [
+    "Synthetic training data; live recalibration required post-production",
+    "PD seasoning curve derived from US market averages; validate for portfolio mix",
+    "FTP benchmark rate requires quarterly update to reflect current SOFR"
+  ],
+  "review_cycle_months": 12,
+  "sr11_7_stage": "development",
+  "approved_by": null,
+  "next_review_date": "2027-04-05",
+  "decision_horizon_months": 36,
+  "cnpv_breakeven_threshold_usd": 50,
+  "pd_seasoning_curve": "US credit card mortality curve (m1–m36; peaks m7–m12)",
+  "risk_weights": {
+    "prime_lt_1pct_pd": 0.75,
+    "near_prime_1_3pct_pd": 1.00,
+    "subprime_gt_3pct_pd": 1.50
+  },
+  "acquisition_signals": {
+    "ACQUIRE": "scenario_weighted_cnpv >= $50 and capital available",
+    "MANAGE_PRICE": "0 <= scenario_weighted_cnpv < $50 (breakeven APR computed)",
+    "DECLINE": "scenario_weighted_cnpv < $0 OR capital constrained OR recession_cnpv < -$200"
+  }
+}

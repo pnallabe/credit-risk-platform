@@ -1,0 +1,14 @@
+artifact_uri: /Users/swarnabale/Documents/My Projects/credit-risk-platform/mlruns/833892994334990777/f22905043a7e4455af420416cb7161f9/artifacts
+end_time: 1775258205388
+entry_point_name: ''
+experiment_id: '833892994334990777'
+lifecycle_stage: active
+run_id: f22905043a7e4455af420416cb7161f9
+run_name: cc_pd_model_v1
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1775258205332
+status: 3
+tags: []
+user_id: swarnabale

@@ -43,13 +43,13 @@ export default function FeatureAnalysisPage() {
   const overlayData = useMemo(() => {
     const bins = Array.from({ length: 10 }, (_, i) => ({ bin: i + 1, APPROVE: 0, REJECT: 0, MANUAL_REVIEW: 0 }));
     for (const d of decisions) {
-      const raw = (d as Record<string, unknown>)[selectedFeature];
+      const raw = (d as unknown as Record<string, unknown>)[selectedFeature];
       if (typeof raw !== "number") continue;
       const pct = selectedFeature === "credit_score" ? (raw - 300) / 550 : Math.min(raw / 300000, 1);
       const idx = Math.min(Math.floor(pct * 10), 9);
       if (d.decision in bins[idx]) (bins[idx] as Record<string, number>)[d.decision]++;
     }
-    return bins.map((b) => ({ bin: `${b.bin * 10}%`, ...b }));
+    return bins.map((b) => ({ ...b, bin: `${b.bin * 10}%` }));
   }, [decisions, selectedFeature]);
 
   const correlationMatrix = buildCorrelationMatrix(FEATURES);

@@ -251,7 +251,11 @@ def _collect_reason_codes(
 # ---------------------------------------------------------------------------
 
 
-def make_decision(request: DecisionRequest) -> DecisionResult:
+def make_decision(
+    request: DecisionRequest,
+    *,
+    policy_overrides: Optional[Dict[str, Any]] = None,
+) -> DecisionResult:
     """Apply the decision policy and return a ``DecisionResult``.
 
     Decision tree
@@ -266,6 +270,16 @@ def make_decision(request: DecisionRequest) -> DecisionResult:
     ----------
     request:
         Populated :class:`DecisionRequest` instance.
+    policy_overrides : dict, optional
+        Per-tenant policy cutoff overrides resolved from the Config Registry
+        (P2.1).  Supported keys::
+
+            pd_threshold      float  — replaces PD_THRESHOLD_MEDIUM
+            pd_threshold_low  float  — replaces PD_THRESHOLD_LOW
+            dti_high          float  — replaces DTI_HIGH_THRESHOLD
+
+        Unknown keys are silently ignored so future cutoff additions are
+        backwards-compatible.
 
     Returns
     -------
@@ -273,6 +287,11 @@ def make_decision(request: DecisionRequest) -> DecisionResult:
         Complete decision with audit fields.
     """
     start_ns = time.perf_counter_ns()
+
+    # P2.1 — Apply per-tenant policy cutoffs when provided
+    overrides = policy_overrides or {}
+    _pd_low    = float(overrides.get("pd_threshold_low", PD_THRESHOLD_LOW))
+    _pd_medium = float(overrides.get("pd_threshold",     PD_THRESHOLD_MEDIUM))
 
     fraud = request.fraud_result
     credit = request.credit_result
@@ -287,10 +306,10 @@ def make_decision(request: DecisionRequest) -> DecisionResult:
     elif fraud.fraud_flag == "manual_review":
         decision = DECISION_MANUAL_REVIEW
 
-    elif credit.pd_score < PD_THRESHOLD_LOW:
+    elif credit.pd_score < _pd_low:
         decision = DECISION_APPROVE
 
-    elif credit.pd_score <= PD_THRESHOLD_MEDIUM:
+    elif credit.pd_score <= _pd_medium:
         decision = DECISION_APPROVE
 
     else:

@@ -31,8 +31,7 @@ export type LoanDetailsFormData = z.infer<typeof loanDetailsSchema>;
 // Step 2 — Personal & Financial Info
 // ─────────────────────────────────────────────────────────────────────────────
 
-export const personalInfoSchema = z
-  .object({
+const _personalInfoBase = z.object({
     annual_income: z
       .number({ required_error: "Annual income is required" })
       .min(1, "Annual income must be greater than zero"),
@@ -49,8 +48,9 @@ export const personalInfoSchema = z
     num_open_accounts: z.number().min(0).max(100).default(3),
     num_derogatory_marks: z.number().min(0).max(20).default(0),
     months_since_last_delinquency: z.number().min(0).nullable().optional(),
-  })
-  .superRefine((data, ctx) => {
+  });
+
+export const personalInfoSchema = _personalInfoBase.superRefine((data, ctx) => {
     if (
       ["employed", "self-employed"].includes(data.employment_status) &&
       (data.employer_tenure_months === undefined || data.employer_tenure_months === null)
@@ -82,7 +82,7 @@ export type ConsentFormData = z.infer<typeof consentSchema>;
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const fullApplicationSchema = loanDetailsSchema
-  .merge(personalInfoSchema)
+  .merge(_personalInfoBase)
   .merge(consentSchema);
 
 export type FullApplicationFormData = z.infer<typeof fullApplicationSchema>;

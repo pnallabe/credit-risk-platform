@@ -1,50 +1,100 @@
 # ---------------------------------------------------------------------------
-# Credit Risk Platform — Full Stack
+# Credit Risk Platform — Full Stack (Multi-Domain)
 # ---------------------------------------------------------------------------
 # Services:
-#   postgres          :5432  — Database
-#   redis             :6379  — Cache / rate-limit store
-#   mlflow            :5000  — ML experiment tracking
-#   ingestion-api     :8080  — Data ingestion (FastAPI)
-#   decision-api      :8081  — Underwriting engine (FastAPI)
-#   ai-agent          :8082  — LangChain AI agent (FastAPI + SSE)
-#   dashboard         :8501  — Legacy Streamlit dashboard
-#   applicant-portal  :3000  — Loan application portal (Next.js)
-#   analytics-dashboard :3001 — Internal analytics (Next.js)
+#   postgres              :5432  — Loans DB (loan apps, funded loans, customers)
+#   postgres-transactions :5433  — Transactions DB (bank accounts, payments, fraud)
+#   postgres-cards        :5434  — Credit Cards DB (card accounts, txns, statements)
+#   redis                 :6379  — Cache / rate-limit store
+#   mlflow                :5000  — ML experiment tracking
+#   ingestion-api         :8080  — Data ingestion (FastAPI)
+#   decision-api          :8081  — Underwriting engine (FastAPI)
+#   ai-agent              :8082  — LangChain AI agent (FastAPI + SSE)
+#   dashboard             :8501  — Legacy Streamlit dashboard
+#   applicant-portal      :3000  — Loan application portal (Next.js)
+#   analytics-dashboard   :3001  — Internal analytics (Next.js)
+#
+# Connection strings:
+#   Loans:        postgresql://credit_user:changeme@localhost:5432/credit_risk_loans
+#   Transactions: postgresql://credit_user:changeme@localhost:5433/credit_risk_transactions
+#   Cards:        postgresql://credit_user:changeme@localhost:5434/credit_risk_cards
 #
 # Usage:
 #   make dev           → docker compose up --build
 #   make dev-detach    → docker compose up --build -d
 #   make down          → docker compose down -v
 #   make logs          → docker compose logs -f
+#   make db-init-all   → initialise all 3 domain schemas
 # ---------------------------------------------------------------------------
 
 x-common-env: &common-env
-  POSTGRES_DB: ${POSTGRES_DB:-credit_risk}
   POSTGRES_USER: ${POSTGRES_USER:-credit_user}
   POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
   JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
 
+x-postgres-healthcheck: &pg-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 5
+
 services:
   # ---------------------------------------------------------------------------
-  # PostgreSQL
+  # PostgreSQL — LOANS DB  (port 5432)
   # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
-    container_name: crp_postgres_db
+    container_name: crp_postgres_loans
     environment:
       <<: *common-env
+      POSTGRES_DB: ${LOANS_DB:-credit_risk_loans}
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
-      - ./db/migrations/002_agent_sessions.sql:/docker-entrypoint-initdb.d/02_agent_sessions.sql:ro
+      - postgres_loans_data:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01_core_schema.sql:ro
+      - ./db/schema_loans.sql:/docker-entrypoint-initdb.d/02_loans_schema.sql:ro
+      - ./db/migrations/002_agent_sessions.sql:/docker-entrypoint-initdb.d/03_agent_sessions.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${POSTGRES_DB:-credit_risk}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${LOANS_DB:-credit_risk_loans}"]
+      <<: *pg-healthcheck
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — TRANSACTIONS DB  (port 5433)
+  # ---------------------------------------------------------------------------
+  postgres-transactions:
+    image: postgres:16-alpine
+    container_name: crp_postgres_transactions
+    environment:
+      <<: *common-env
+      POSTGRES_DB: ${TRANSACTIONS_DB:-credit_risk_transactions}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_transactions_data:/var/lib/postgresql/data
+      - ./db/schema_transactions.sql:/docker-entrypoint-initdb.d/01_transactions_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${TRANSACTIONS_DB:-credit_risk_transactions}"]
+      <<: *pg-healthcheck
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — CREDIT CARDS DB  (port 5434)
+  # ---------------------------------------------------------------------------
+  postgres-cards:
+    image: postgres:16-alpine
+    container_name: crp_postgres_cards
+    environment:
+      <<: *common-env
+      POSTGRES_DB: ${CARDS_DB:-credit_risk_cards}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_cards_data:/var/lib/postgresql/data
+      - ./db/schema_credit_cards.sql:/docker-entrypoint-initdb.d/01_cards_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${CARDS_DB:-credit_risk_cards}"]
+      <<: *pg-healthcheck
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------
@@ -101,18 +151,22 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-credit_user}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-credit_risk}
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      # P1.2: Redis for ingestion deduplication
+      REDIS_URL: redis://redis:6379/1
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     volumes:
       - ./data:/app/data:ro
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=4)\" 2>/dev/null || exit 1"]
       interval: 15s
-      timeout: 5s
+      timeout: 8s
       retries: 5
 
   # ---------------------------------------------------------------------------
@@ -130,6 +184,12 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
       FRAUD_MODEL_PATH: /app/models/fraud_detection/fraud_model_v1.pkl
       RISK_MODEL_PATH: /app/models/credit_risk/risk_model_v1.pkl
+      # P1.1: Redis for rate limiting + idempotency
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_DECISIONS: ${RATE_LIMIT_DECISIONS:-100}
+      RATE_LIMIT_BATCH: ${RATE_LIMIT_BATCH:-10}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60}
+      IDEMPOTENCY_TTL_SECONDS: ${IDEMPOTENCY_TTL_SECONDS:-86400}
     ports:
       - "8081:8081"
     depends_on:
@@ -137,14 +197,16 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_started
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     volumes:
       - ./models:/app/models:ro
       - decision_data:/app/data
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8081/v1/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/v1/health', timeout=4)\" 2>/dev/null || exit 1"]
       interval: 15s
-      timeout: 5s
+      timeout: 8s
       retries: 5
 
   # ---------------------------------------------------------------------------
@@ -175,9 +237,9 @@ services:
       - ./ai-agent/config:/app/config:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8082/health || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8082/health', timeout=4)\" 2>/dev/null || exit 1"]
       interval: 15s
-      timeout: 5s
+      timeout: 8s
       retries: 5
 
   # ---------------------------------------------------------------------------
@@ -287,7 +349,9 @@ services:
 # Volumes
 # ---------------------------------------------------------------------------
 volumes:
-  postgres_data:
+  postgres_loans_data:
+  postgres_transactions_data:
+  postgres_cards_data:
   redis_data:
   mlflow_artifacts:
   decision_data:

@@ -7,6 +7,7 @@ All model calls use mock models to avoid requiring trained .pkl files.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict
@@ -19,6 +20,27 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).parents[3]
 sys.path.insert(0, str(ROOT))
+
+# ---------------------------------------------------------------------------
+# JWT auth setup — must happen before src.main is imported so the module-level
+# JWT_SECRET check in main.py does not raise RuntimeError([CRIT-01]).
+# ---------------------------------------------------------------------------
+os.environ.setdefault("JWT_SECRET", "test-secret-pytest")  # nosec B105
+
+import jwt as _jwt  # noqa: E402 – must be after sys.path setup
+
+
+def _make_test_token(tenant_id: str = "test-tenant") -> str:
+    """Return a signed HS256 JWT containing the required tenant_id claim."""
+    return _jwt.encode(
+        {"sub": "test-user", "tenant_id": tenant_id},
+        os.environ["JWT_SECRET"],
+        algorithm="HS256",
+    )
+
+
+# Reusable auth header injected into every TestClient fixture.
+AUTH_HEADERS: Dict[str, str] = {"Authorization": f"Bearer {_make_test_token()}"}
 
 # ---------------------------------------------------------------------------
 # Mock models to avoid requiring .pkl files
@@ -54,7 +76,11 @@ def app_with_low_risk():
     api_module._fraud_model = FRAUD_MODEL_LOW
     api_module._risk_model = LOW_RISK_MODEL
     from src.main import app
-    return TestClient(app)
+    # Patch _load_models so startup completes (including _batch_semaphore init)
+    # without trying to load missing .pkl files from disk.
+    with patch("src.main._load_models"):
+        with TestClient(app, headers=AUTH_HEADERS) as client:
+            yield client
 
 
 @pytest.fixture
@@ -65,7 +91,9 @@ def app_with_high_risk():
     api_module._fraud_model = _make_mock_model(proba=0.05)
     api_module._risk_model = HIGH_RISK_MODEL
     from src.main import app
-    return TestClient(app)
+    with patch("src.main._load_models"):
+        with TestClient(app, headers=AUTH_HEADERS) as client:
+            yield client
 
 
 @pytest.fixture
@@ -76,7 +104,9 @@ def app_with_fraud():
     api_module._fraud_model = FRAUD_MODEL_HIGH
     api_module._risk_model = LOW_RISK_MODEL
     from src.main import app
-    return TestClient(app)
+    with patch("src.main._load_models"):
+        with TestClient(app, headers=AUTH_HEADERS) as client:
+            yield client
 
 
 # ---------------------------------------------------------------------------

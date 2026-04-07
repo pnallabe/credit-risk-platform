@@ -50,12 +50,22 @@ CREATE INDEX IF NOT EXISTS idx_loan_apps_applied_at  ON loan_applications (appli
 
 -- =============================================================================
 -- 2. features
---    Feature store — one row per (application_id, feature_set_version)
+--    Feature store — one row per (application_id, feature_set_version, as_of_date)
+--
+--    Point-in-time correctness:
+--      as_of_date  — the business date these features represent.  Use this
+--                    for all backtesting queries to prevent look-ahead bias.
+--      event_timestamp — UTC wall-clock moment features were computed.
+--
+--    The unique constraint is on (application_id, feature_set_version, as_of_date)
+--    so that different historical snapshots for the same application co-exist.
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS features (
     id                          BIGSERIAL       PRIMARY KEY,
     application_id              UUID            NOT NULL REFERENCES loan_applications(application_id) ON DELETE CASCADE,
     feature_set_version         VARCHAR(50)     NOT NULL,
+    event_timestamp             TIMESTAMPTZ     NOT NULL,
+    as_of_date                  DATE            NOT NULL,
     computed_at                 TIMESTAMPTZ     NOT NULL DEFAULT now(),
 
     -- Computed features
@@ -69,12 +79,32 @@ CREATE TABLE IF NOT EXISTS features (
     -- Overflow bucket for additional computed features
     feature_json                JSONB,
 
-    CONSTRAINT uq_features_app_version UNIQUE (application_id, feature_set_version)
+    CONSTRAINT uq_features_app_version_date UNIQUE (application_id, feature_set_version, as_of_date)
 );
 
 CREATE INDEX IF NOT EXISTS idx_features_application_id ON features (application_id);
 CREATE INDEX IF NOT EXISTS idx_features_version        ON features (feature_set_version);
+CREATE INDEX IF NOT EXISTS idx_features_as_of_date     ON features (as_of_date);
 CREATE INDEX IF NOT EXISTS idx_features_computed_at    ON features (computed_at);
+
+-- =============================================================================
+-- 2b. feature_read_audit
+--     Immutable append-only record of every read from the feature store.
+--     Used to prove point-in-time correctness and detect look-ahead bias.
+--     feature_hash = sha256(sorted JSON of all feature values for that row).
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS feature_read_audit (
+    id                   BIGSERIAL    PRIMARY KEY,
+    application_id       TEXT         NOT NULL,
+    feature_set_version  VARCHAR(50)  NOT NULL,
+    as_of_date           DATE         NOT NULL,
+    event_timestamp      TIMESTAMPTZ  NOT NULL,
+    feature_hash         TEXT         NOT NULL,
+    read_at              TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_feat_audit_app    ON feature_read_audit (application_id);
+CREATE INDEX IF NOT EXISTS idx_feat_audit_read   ON feature_read_audit (read_at);
 
 
 -- =============================================================================

@@ -16,6 +16,22 @@ async function fetcher<T>(url: string): Promise<T> {
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
 
+export interface DecisionRecord {
+  application_id: string;
+  decision: string;
+  created_at: string;
+  loan_amount: number;
+  pd_score: number;
+  top_factors?: string[];
+  reviewer?: string;
+  review_complete_at?: string;
+  fraud_probability?: number;
+  loan_purpose?: string;
+  loan_term?: number;
+  annual_income?: number;
+  bureau_score?: number;
+}
+
 export interface DecisionsStats {
   total: number;
   approved: number;
@@ -26,7 +42,9 @@ export interface DecisionsStats {
   avg_fraud_probability: number;
   fraud_flag_count: number;
   daily_series: Array<{ date: string; approved: number; rejected: number; manual_review: number }>;
+  weekly_trend: Array<{ week: string; APPROVE: number; REJECT: number; MANUAL_REVIEW: number }>;
   by_purpose: Array<{ purpose: string; count: number }>;
+  decisions: DecisionRecord[];
 }
 
 export interface ModelMetrics {
@@ -78,10 +96,20 @@ export interface FairLendingReport {
 // Hooks
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function useDecisionsData(dateRange?: { start: string; end: string }) {
-  const params = dateRange
-    ? `?start=${dateRange.start}&end=${dateRange.end}`
-    : "";
+export function useDecisionsData(dateRange?: string | { start: string; end: string }) {
+  let params = "";
+  if (dateRange) {
+    if (typeof dateRange === "string") {
+      // Convert preset string ("7d", "30d", "90d", "custom") to a date range
+      const days = dateRange === "7d" ? 7 : dateRange === "90d" ? 90 : 30;
+      const end = new Date();
+      const start = new Date();
+      start.setDate(start.getDate() - days);
+      params = `?start=${start.toISOString().split("T")[0]}&end=${end.toISOString().split("T")[0]}`;
+    } else {
+      params = `?start=${dateRange.start}&end=${dateRange.end}`;
+    }
+  }
   return useSWR<DecisionsStats>(`/api/v1/analytics/decisions${params}`, fetcher, {
     refreshInterval: REVALIDATE * 1000,
     fallbackData: getMockDecisionsData(),
@@ -126,6 +154,35 @@ function getMockDecisionsData(): DecisionsStats {
     return { date, approved, rejected, manual_review };
   });
 
+  const DECISION_TYPES = ["APPROVE", "REJECT", "MANUAL_REVIEW"];
+  const PURPOSES = ["Personal", "Debt Consolidation", "Home Improvement", "Auto", "Medical", "Education"];
+  const REASON_CODES = ["HIGH_PD", "HIGH_DTI", "INSUFFICIENT_INCOME", "FRAUD_RISK", "CREDIT_HISTORY"];
+  const REVIEWERS = ["Alice Wang", "Bob Smith", "Carol Davis", "Dan Chen"];
+
+  const decisions: DecisionRecord[] = Array.from({ length: 50 }, (_, i) => {
+    const decision = DECISION_TYPES[Math.floor(Math.random() * DECISION_TYPES.length)];
+    const daysAgo = Math.floor(Math.random() * 30);
+    const d = new Date(today);
+    d.setDate(d.getDate() - daysAgo);
+    return {
+      application_id: `APP-${String(1000 + i).padStart(6, "0")}`,
+      decision,
+      created_at: d.toISOString(),
+      loan_amount: Math.floor(Math.random() * 45000 + 5000),
+      pd_score: parseFloat((Math.random() * 0.4).toFixed(3)),
+      top_factors: decision === "REJECT"
+        ? [REASON_CODES[Math.floor(Math.random() * REASON_CODES.length)], REASON_CODES[Math.floor(Math.random() * REASON_CODES.length)]]
+        : undefined,
+      reviewer: decision === "MANUAL_REVIEW" ? REVIEWERS[Math.floor(Math.random() * REVIEWERS.length)] : undefined,
+      review_complete_at: decision === "MANUAL_REVIEW" ? d.toISOString() : undefined,
+      fraud_probability: parseFloat((Math.random() * 0.15).toFixed(3)),
+      loan_purpose: PURPOSES[Math.floor(Math.random() * PURPOSES.length)],
+      loan_term: [12, 24, 36, 48, 60][Math.floor(Math.random() * 5)],
+      annual_income: Math.floor(Math.random() * 120000 + 30000),
+      bureau_score: Math.floor(Math.random() * 350 + 450),
+    };
+  });
+
   return {
     total: 12547,
     approved: 7842,
@@ -144,6 +201,13 @@ function getMockDecisionsData(): DecisionsStats {
       { purpose: "Medical", count: 1200 },
       { purpose: "Education", count: 847 },
     ],
+    weekly_trend: Array.from({ length: 8 }, (_, i) => ({
+      week: `W${i + 1}`,
+      APPROVE: 80 + i * 5 + Math.floor(Math.random() * 10),
+      REJECT: 20 + Math.floor(Math.random() * 5),
+      MANUAL_REVIEW: 10 + Math.floor(Math.random() * 3),
+    })),
+    decisions,
   };
 }
 

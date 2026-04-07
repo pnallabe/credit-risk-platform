@@ -1,6 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+export const dynamic = "force-dynamic";
+
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { type DecisionResponse } from "@/lib/api-client";
@@ -19,6 +21,26 @@ const REASON_CODE_TEXT: Record<string, string> = {
 };
 
 export default function DecisionPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-center text-gray-500">
+            <svg className="w-8 h-8 animate-spin mx-auto mb-3" fill="none" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" className="opacity-25" />
+              <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" className="opacity-75" />
+            </svg>
+            Loading your decision…
+          </div>
+        </div>
+      }
+    >
+      <DecisionContent />
+    </Suspense>
+  );
+}
+
+function DecisionContent() {
   const searchParams = useSearchParams();
   const applicationId = searchParams.get("id") ?? "";
   const [decision, setDecision] = useState<DecisionResponse | null>(null);

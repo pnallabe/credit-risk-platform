@@ -22,7 +22,9 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
-from feature_pipeline.feature_store import write_features
+from datetime import date, datetime, timezone
+
+from feature_pipeline.feature_store import write_features, read_features_as_of, FeatureStoreAuditProof
 from feature_pipeline.features import FeaturePipelineConfig, compute_features
 
 
@@ -35,6 +37,8 @@ CREATE TABLE IF NOT EXISTS features (
     id                          INTEGER         PRIMARY KEY AUTOINCREMENT,
     application_id              TEXT            NOT NULL,
     feature_set_version         TEXT            NOT NULL,
+    event_timestamp             TEXT            NOT NULL,
+    as_of_date                  TEXT            NOT NULL,
     computed_at                 TIMESTAMP       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     credit_utilization          REAL,
     income_stability_score      REAL,
@@ -43,7 +47,16 @@ CREATE TABLE IF NOT EXISTS features (
     credit_age_months           INTEGER,
     payment_history_score       REAL,
     feature_json                TEXT,
-    UNIQUE (application_id, feature_set_version)
+    UNIQUE (application_id, feature_set_version, as_of_date)
+);
+CREATE TABLE IF NOT EXISTS feature_read_audit (
+    id                   INTEGER      PRIMARY KEY AUTOINCREMENT,
+    application_id       TEXT         NOT NULL,
+    feature_set_version  TEXT         NOT NULL,
+    as_of_date           TEXT         NOT NULL,
+    event_timestamp      TEXT         NOT NULL,
+    feature_hash         TEXT         NOT NULL,
+    read_at              TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 """
 
@@ -99,14 +112,22 @@ def feature_df(raw_df) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
+_TS = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+_AOD = date(2024, 6, 1)
+
+
 @pytest.mark.asyncio
 async def test_write_returns_correct_metadata(sqlite_engine, feature_df):
-    """write_features should return rows_written, duration_seconds, feature_version."""
+    """write_features should return rows_written, duration_seconds, feature_version, as_of_date."""
     config = FeaturePipelineConfig(version="1.0.0")
-    result = await write_features(feature_df, config, db_url="", engine=sqlite_engine)
+    result = await write_features(
+        feature_df, config, db_url="", engine=sqlite_engine,
+        event_timestamp=_TS, as_of_date=_AOD,
+    )
 
     assert result["rows_written"] == len(feature_df)
     assert result["feature_version"] == "1.0.0"
+    assert result["as_of_date"] == "2024-06-01"
     assert isinstance(result["duration_seconds"], float)
     assert result["duration_seconds"] >= 0.0
 
@@ -115,7 +136,8 @@ async def test_write_returns_correct_metadata(sqlite_engine, feature_df):
 async def test_rows_persisted_to_db(sqlite_engine, feature_df):
     """Rows written must be readable from the DB."""
     config = FeaturePipelineConfig(version="1.0.0")
-    await write_features(feature_df, config, db_url="", engine=sqlite_engine)
+    await write_features(feature_df, config, db_url="", engine=sqlite_engine,
+                         event_timestamp=_TS, as_of_date=_AOD)
 
     async with sqlite_engine.connect() as conn:
         result = await conn.execute(text("SELECT COUNT(*) FROM features"))
@@ -128,8 +150,10 @@ async def test_rows_persisted_to_db(sqlite_engine, feature_df):
 async def test_upsert_does_not_duplicate(sqlite_engine, feature_df):
     """Writing the same data twice must not create duplicate rows."""
     config = FeaturePipelineConfig(version="1.0.0")
-    await write_features(feature_df, config, db_url="", engine=sqlite_engine)
-    await write_features(feature_df, config, db_url="", engine=sqlite_engine)
+    await write_features(feature_df, config, db_url="", engine=sqlite_engine,
+                         event_timestamp=_TS, as_of_date=_AOD)
+    await write_features(feature_df, config, db_url="", engine=sqlite_engine,
+                         event_timestamp=_TS, as_of_date=_AOD)
 
     async with sqlite_engine.connect() as conn:
         result = await conn.execute(text("SELECT COUNT(*) FROM features"))
@@ -142,7 +166,8 @@ async def test_upsert_does_not_duplicate(sqlite_engine, feature_df):
 async def test_feature_json_round_trips(sqlite_engine, feature_df):
     """feature_json must deserialise back to a dict with expected keys."""
     config = FeaturePipelineConfig(version="1.0.0")
-    await write_features(feature_df, config, db_url="", engine=sqlite_engine)
+    await write_features(feature_df, config, db_url="", engine=sqlite_engine,
+                         event_timestamp=_TS, as_of_date=_AOD)
 
     async with sqlite_engine.connect() as conn:
         result = await conn.execute(
@@ -162,8 +187,10 @@ async def test_multiple_versions_stored_separately(sqlite_engine, feature_df):
     config_v1 = FeaturePipelineConfig(version="1.0.0")
     config_v2 = FeaturePipelineConfig(version="2.0.0")
 
-    await write_features(feature_df, config_v1, db_url="", engine=sqlite_engine)
-    await write_features(feature_df, config_v2, db_url="", engine=sqlite_engine)
+    await write_features(feature_df, config_v1, db_url="", engine=sqlite_engine,
+                         event_timestamp=_TS, as_of_date=_AOD)
+    await write_features(feature_df, config_v2, db_url="", engine=sqlite_engine,
+                         event_timestamp=_TS, as_of_date=_AOD)
 
     async with sqlite_engine.connect() as conn:
         result = await conn.execute(
@@ -193,7 +220,8 @@ async def test_large_batch_written_in_chunks(sqlite_engine, raw_df):
     feature_big_df = compute_features(big_df, config)
 
     result = await write_features(
-        feature_big_df, config, db_url="", engine=sqlite_engine
+        feature_big_df, config, db_url="", engine=sqlite_engine,
+        event_timestamp=_TS, as_of_date=_AOD,
     )
 
     assert result["rows_written"] == 1200
@@ -208,7 +236,8 @@ async def test_large_batch_written_in_chunks(sqlite_engine, raw_df):
 async def test_scalar_feature_values_stored_correctly(sqlite_engine, feature_df):
     """Numeric scalar features must be stored with correct approximate values."""
     config = FeaturePipelineConfig(version="1.0.0")
-    await write_features(feature_df, config, db_url="", engine=sqlite_engine)
+    await write_features(feature_df, config, db_url="", engine=sqlite_engine,
+                         event_timestamp=_TS, as_of_date=_AOD)
 
     async with sqlite_engine.connect() as conn:
         result = await conn.execute(
@@ -224,3 +253,78 @@ async def test_scalar_feature_values_stored_correctly(sqlite_engine, feature_df)
     assert abs(row[0] - 0.46875) < 1e-3
     # repayment_capacity for dti=0.30 → 0.70
     assert abs(row[2] - 0.70) < 1e-3
+
+
+# ---------------------------------------------------------------------------
+# P1.1 — Point-in-time correctness tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_no_lookahead_bias(sqlite_engine, feature_df):
+    """read_features_as_of must never return rows from a later as_of_date.
+
+    Write two snapshots for the same applications:
+      Snapshot A: as_of_date = 2024-01-15  (earlier)
+      Snapshot B: as_of_date = 2024-06-01  (later)
+
+    Query with as_of_date = 2024-03-01.
+    Must return Snapshot A values, not Snapshot B.
+    """
+    import uuid
+
+    config = FeaturePipelineConfig(version="1.0.0")
+
+    # Snapshot A — January
+    aod_jan = date(2024, 1, 15)
+    ts_jan = datetime(2024, 1, 15, 8, 0, 0, tzinfo=timezone.utc)
+    df_a = feature_df.copy()
+    df_a["credit_utilization"] = 0.10  # distinct sentinel value
+    await write_features(df_a, config, db_url="", engine=sqlite_engine,
+                         event_timestamp=ts_jan, as_of_date=aod_jan)
+
+    # Snapshot B — June — different utilization values
+    aod_jun = date(2024, 6, 1)
+    ts_jun = datetime(2024, 6, 1, 8, 0, 0, tzinfo=timezone.utc)
+    df_b = feature_df.copy()
+    df_b["credit_utilization"] = 0.90  # distinct sentinel value
+    await write_features(df_b, config, db_url="", engine=sqlite_engine,
+                         event_timestamp=ts_jun, as_of_date=aod_jun)
+
+    # Query at March — should see Snapshot A (Jan), not Snapshot B (June)
+    app_ids = feature_df["application_id"].tolist()
+    result_df = await read_features_as_of(
+        app_ids, date(2024, 3, 1), "1.0.0", sqlite_engine
+    )
+
+    assert len(result_df) == len(feature_df), "Should return one row per application"
+    returned_utils = result_df["credit_utilization"].unique().tolist()
+    assert all(abs(u - 0.10) < 0.01 for u in returned_utils), (
+        f"Expected Jan snapshot (0.10) but got: {returned_utils}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_audit_proof_written(sqlite_engine, feature_df):
+    """Calling read_features_as_of must write one audit row per returned feature row."""
+    config = FeaturePipelineConfig(version="1.0.0")
+    await write_features(
+        feature_df, config, db_url="", engine=sqlite_engine,
+        event_timestamp=_TS, as_of_date=_AOD,
+    )
+
+    app_ids = feature_df["application_id"].tolist()
+    _ = await read_features_as_of(app_ids, _AOD, "1.0.0", sqlite_engine)
+
+    async with sqlite_engine.connect() as conn:
+        result = await conn.execute(
+            text("SELECT COUNT(*), MIN(LENGTH(feature_hash)) FROM feature_read_audit")
+        )
+        row = result.fetchone()
+
+    audit_count, min_hash_len = row[0], row[1]
+    assert audit_count == len(feature_df), (
+        f"Expected {len(feature_df)} audit rows, got {audit_count}"
+    )
+    # sha256 hex digest is always 64 chars
+    assert min_hash_len == 64, f"feature_hash should be 64-char hex; got length {min_hash_len}"

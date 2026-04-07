@@ -1,0 +1,83 @@
+{
+  "model_name": "cc_lgd_segmentation",
+  "model_type": "segmentation_table",
+  "version": "1.0.0",
+  "intended_use": "Provide LGD estimates for PD×LGD×EAD expected loss computations",
+  "basel_iii_compliance": {
+    "unsecured_floor_applied": true,
+    "unsecured_floor_value": 0.45,
+    "notes": "All unsecured LGD predictions are floored at 45% (senior unsecured retail)."
+  },
+  "downturn_lgd_methodology": {
+    "description": "Downturn LGD computed as mean LGD in years where portfolio annual mean LGD is above the 99th percentile.",
+    "idempotent_fit": true
+  },
+  "segments": [
+    {
+      "segment_id": "unsecured_premium_A",
+      "product_type": "unsecured",
+      "risk_grade": "A",
+      "collateral_type": null,
+      "mean_lgd": 0.68,
+      "std_lgd": 0.1,
+      "downturn_lgd": 0.8,
+      "sample_size": 0,
+      "95th_percentile_lgd": 0.68
+    },
+    {
+      "segment_id": "unsecured_premium_B",
+      "product_type": "unsecured",
+      "risk_grade": "B",
+      "collateral_type": null,
+      "mean_lgd": 0.68,
+      "std_lgd": 0.1,
+      "downturn_lgd": 0.8,
+      "sample_size": 0,
+      "95th_percentile_lgd": 0.68
+    },
+    {
+      "segment_id": "unsecured_standard_C",
+      "product_type": "unsecured",
+      "risk_grade": "C",
+      "collateral_type": null,
+      "mean_lgd": 0.72,
+      "std_lgd": 0.12,
+      "downturn_lgd": 0.85,
+      "sample_size": 0,
+      "95th_percentile_lgd": 0.72
+    },
+    {
+      "segment_id": "unsecured_standard_D",
+      "product_type": "unsecured",
+      "risk_grade": "D",
+      "collateral_type": null,
+      "mean_lgd": 0.72,
+      "std_lgd": 0.12,
+      "downturn_lgd": 0.85,
+      "sample_size": 0,
+      "95th_percentile_lgd": 0.72
+    },
+    {
+      "segment_id": "unsecured_standard_E",
+      "product_type": "unsecured",
+      "risk_grade": "E",
+      "collateral_type": null,
+      "mean_lgd": 0.72,
+      "std_lgd": 0.12,
+      "downturn_lgd": 0.85,
+      "sample_size": 0,
+      "95th_percentile_lgd": 0.72
+    },
+    {
+      "segment_id": "secured_ALL",
+      "product_type": "secured",
+      "risk_grade": "ALL",
+      "collateral_type": null,
+      "mean_lgd": 0.42,
+      "std_lgd": 0.08,
+      "downturn_lgd": 0.55,
+      "sample_size": 0,
+      "95th_percentile_lgd": 0.42
+    }
+  ]
+}

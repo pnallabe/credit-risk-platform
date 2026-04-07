@@ -22,7 +22,7 @@ import hashlib
 import json
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import event, text
@@ -75,6 +75,7 @@ def mask_pii(features: Dict[str, Any]) -> Dict[str, Any]:
 _CREATE_AUDIT_TABLE = """
 CREATE TABLE IF NOT EXISTS audit_log (
     log_id                TEXT PRIMARY KEY,
+    tenant_id             TEXT NOT NULL,
     application_id        TEXT NOT NULL,
     logged_at             TEXT NOT NULL,
     input_features        TEXT,
@@ -84,27 +85,109 @@ CREATE TABLE IF NOT EXISTS audit_log (
     risk_score            REAL,
     decision_output       TEXT,
     reason_codes          TEXT,
-    decision_latency_ms   INTEGER
+    decision_latency_ms   INTEGER,
+    -- Section 19: CC Originations Valuation fields (NULL = non-valuation decision)
+    scenario_weighted_cnpv      REAL,
+    cnpv_base                   REAL,
+    cnpv_worsening              REAL,
+    cnpv_recession              REAL,
+    ftp_rate_bps                REAL,
+    rwa_usd                     REAL,
+    capital_available_usd       REAL,
+    acquisition_signal          TEXT,
+    recommended_apr             REAL,
+    recommended_credit_limit    INTEGER,
+    scenario_name               TEXT,
+    model_version_valuation     TEXT,
+    policy_version              TEXT
 );
 """
 
 _INSERT_AUDIT = """
 INSERT INTO audit_log (
-    log_id, application_id, logged_at, input_features,
+    log_id, tenant_id, application_id, logged_at, input_features,
     model_version, feature_version,
     fraud_score, risk_score,
-    decision_output, reason_codes, decision_latency_ms
+    decision_output, reason_codes, decision_latency_ms,
+    scenario_weighted_cnpv, cnpv_base, cnpv_worsening, cnpv_recession,
+    ftp_rate_bps, rwa_usd, capital_available_usd,
+    acquisition_signal, recommended_apr, recommended_credit_limit,
+    scenario_name, model_version_valuation, policy_version
 ) VALUES (
-    :log_id, :application_id, :logged_at, :input_features,
+    :log_id, :tenant_id, :application_id, :logged_at, :input_features,
     :model_version, :feature_version,
     :fraud_score, :risk_score,
-    :decision_output, :reason_codes, :decision_latency_ms
+    :decision_output, :reason_codes, :decision_latency_ms,
+    :scenario_weighted_cnpv, :cnpv_base, :cnpv_worsening, :cnpv_recession,
+    :ftp_rate_bps, :rwa_usd, :capital_available_usd,
+    :acquisition_signal, :recommended_apr, :recommended_credit_limit,
+    :scenario_name, :model_version_valuation, :policy_version
 )
 """
 
 _SELECT_AUDIT = """
-SELECT * FROM audit_log WHERE application_id = :application_id
+SELECT * FROM audit_log
+WHERE tenant_id = :tenant_id AND application_id = :application_id
 ORDER BY logged_at DESC LIMIT 1
+"""
+
+
+# ---------------------------------------------------------------------------
+# DDL — portfolio_audit_log table (Section 20.12.2)
+# ---------------------------------------------------------------------------
+
+_CREATE_PORTFOLIO_AUDIT_TABLE = """
+CREATE TABLE IF NOT EXISTS portfolio_audit_log (
+    log_id                  TEXT PRIMARY KEY,
+    account_id              TEXT NOT NULL,    -- SHA-256 hashed (PII)
+    review_month            TEXT NOT NULL,    -- YYYY-MM
+    recommended_action      TEXT NOT NULL,    -- HOLD/CLI/CLD/APR_UP/APR_DOWN
+    action_confidence       REAL,
+    guardrail_override      INTEGER,          -- 1 if guardrail changed ML recommendation
+    guardrail_reason        TEXT,
+    current_credit_limit    INTEGER,
+    proposed_credit_limit   INTEGER,
+    current_apr             REAL,
+    proposed_apr            REAL,
+    cnpv_delta_base         REAL,
+    cnpv_delta_worsening    REAL,
+    cnpv_delta_recession    REAL,
+    scenario_weighted_delta REAL,
+    incremental_rwa_usd     REAL,
+    model_version_portfolio TEXT,
+    feature_version         TEXT,
+    policy_version          TEXT,
+    logged_at               TEXT NOT NULL
+);
+"""
+
+_INSERT_PORTFOLIO_AUDIT = """
+INSERT INTO portfolio_audit_log (
+    log_id, account_id, review_month,
+    recommended_action, action_confidence,
+    guardrail_override, guardrail_reason,
+    current_credit_limit, proposed_credit_limit,
+    current_apr, proposed_apr,
+    cnpv_delta_base, cnpv_delta_worsening, cnpv_delta_recession,
+    scenario_weighted_delta, incremental_rwa_usd,
+    model_version_portfolio, feature_version, policy_version,
+    logged_at
+) VALUES (
+    :log_id, :account_id, :review_month,
+    :recommended_action, :action_confidence,
+    :guardrail_override, :guardrail_reason,
+    :current_credit_limit, :proposed_credit_limit,
+    :current_apr, :proposed_apr,
+    :cnpv_delta_base, :cnpv_delta_worsening, :cnpv_delta_recession,
+    :scenario_weighted_delta, :incremental_rwa_usd,
+    :model_version_portfolio, :feature_version, :policy_version,
+    :logged_at
+)
+"""
+
+_SELECT_PORTFOLIO_AUDIT = """
+SELECT * FROM portfolio_audit_log WHERE account_id = :account_id
+ORDER BY logged_at DESC LIMIT 100
 """
 
 
@@ -132,6 +215,7 @@ async def log_decision(
     model_versions: Dict[str, str],
     input_features: Dict[str, Any],
     db_url: str,
+    tenant_id: str,
 ) -> str:
     """Persist a decision audit record and return the generated ``log_id``.
 
@@ -154,12 +238,17 @@ async def log_decision(
     db_url:
         SQLAlchemy async connection URL.
         Use ``"sqlite+aiosqlite:///:memory:"`` for tests.
+    tenant_id:
+        Opaque tenant identifier from JWT claims.  Required — any call
+        site that cannot supply this value has a security gap.
 
     Returns
     -------
     str
         The UUID ``log_id`` for the inserted audit record.
     """
+    if not tenant_id or not tenant_id.strip():
+        raise ValueError("tenant_id is required for audit log writes")
     log_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
@@ -185,9 +274,17 @@ async def log_decision(
     )
 
     masked_features = mask_pii(input_features)
+    # Section 19: also mask origination_id -> SHA-256 in CC valuation records
+    if "origination_id" in masked_features and masked_features["origination_id"]:
+        masked_features["origination_id"] = _sha256(str(masked_features["origination_id"]))
+
+    # Extract CC valuation fields (all must be present if decision_result carries them;
+    # None is stored as NULL — NOT permitted in compliance records — callers must supply values)
+    dr_dict = decision_result if isinstance(decision_result, dict) else vars(decision_result) if hasattr(decision_result, "__dict__") else {}
 
     params: Dict[str, Any] = {
         "log_id": log_id,
+        "tenant_id": tenant_id,
         "application_id": str(application_id),
         "logged_at": now,
         "input_features": json.dumps(masked_features),
@@ -198,6 +295,20 @@ async def log_decision(
         "decision_output": str(decision_output),
         "reason_codes": json.dumps(reason_codes),
         "decision_latency_ms": int(decision_latency_ms),
+        # CC valuation fields (Section 19) — None if not a valuation decision
+        "scenario_weighted_cnpv":   dr_dict.get("scenario_weighted_cnpv"),
+        "cnpv_base":                dr_dict.get("cnpv_base"),
+        "cnpv_worsening":           dr_dict.get("cnpv_worsening"),
+        "cnpv_recession":           dr_dict.get("cnpv_recession"),
+        "ftp_rate_bps":             dr_dict.get("ftp_rate_bps"),
+        "rwa_usd":                  dr_dict.get("rwa_usd"),
+        "capital_available_usd":    dr_dict.get("capital_available_usd"),
+        "acquisition_signal":       dr_dict.get("acquisition_signal"),
+        "recommended_apr":          dr_dict.get("recommended_apr"),
+        "recommended_credit_limit": dr_dict.get("recommended_credit_limit"),
+        "scenario_name":            dr_dict.get("scenario_name"),
+        "model_version_valuation":  dr_dict.get("model_version_valuation"),
+        "policy_version":           dr_dict.get("policy_version"),
     }
 
     engine = _get_engine(db_url)
@@ -207,8 +318,9 @@ async def log_decision(
         await conn.execute(text(_INSERT_AUDIT), params)
 
     logger.info(
-        "Audit log written: log_id=%s application_id=%s decision=%s",
+        "Audit log written: log_id=%s tenant_id=%s application_id=%s decision=%s",
         log_id,
+        tenant_id,
         application_id,
         decision_output,
     )
@@ -218,6 +330,7 @@ async def log_decision(
 async def get_audit_record(
     application_id: str,
     db_url: str,
+    tenant_id: str,
 ) -> Optional[Dict[str, Any]]:
     """Retrieve the most recent audit record for *application_id*.
 
@@ -227,20 +340,26 @@ async def get_audit_record(
         UUID string of the loan application.
     db_url:
         SQLAlchemy async connection URL.
+    tenant_id:
+        Opaque tenant identifier — enforces row-level tenant isolation.
+        A missing or empty tenant_id raises ``ValueError``.
 
     Returns
     -------
     dict or None
         Dictionary of all audit_log columns, with ``input_features``,
         ``reason_codes``, and ``model_version`` JSON-decoded.
-        Returns ``None`` if no record is found.
+        Returns ``None`` if no record is found for this tenant.
     """
+    if not tenant_id or not tenant_id.strip():
+        raise ValueError("tenant_id is required for audit log reads")
     engine = _get_engine(db_url)
 
     async with engine.connect() as conn:
         try:
             result = await conn.execute(
-                text(_SELECT_AUDIT), {"application_id": application_id}
+                text(_SELECT_AUDIT),
+                {"tenant_id": tenant_id, "application_id": application_id},
             )
         except Exception:
             # Table may not exist yet in tests
@@ -261,3 +380,596 @@ async def get_audit_record(
                     pass  # leave as-is
 
     return record
+
+
+# ---------------------------------------------------------------------------
+# Section 20 — Portfolio Action Audit
+# ---------------------------------------------------------------------------
+
+
+async def log_portfolio_action(
+    account_id: str,
+    review_month: str,
+    action_result: Dict[str, Any],
+    feature_version: str,
+    model_version_portfolio: str,
+    policy_version: str,
+    db_url: str,
+) -> str:
+    """Persist a portfolio action audit record and return the generated ``log_id``.
+
+    Parameters
+    ----------
+    account_id:
+        Raw account / origination ID — will be SHA-256 hashed before storage.
+    review_month:
+        YYYY-MM string for the review cycle.
+    action_result:
+        Dict returned by ``decision_engine.portfolio_review`` for one account.
+        Expected keys: final_action, action_confidence, guardrail_reason,
+        current_credit_limit, new_credit_limit, current_apr, new_apr,
+        cnpv_delta_base, cnpv_delta_worsening, cnpv_delta_recession,
+        cnpv_delta_scenario_weighted, incremental_rwa_usd.
+    feature_version:
+        Feature pipeline version string.
+    model_version_portfolio:
+        MLflow version of the portfolio action model.
+    policy_version:
+        Credit policy version used for this review batch.
+    db_url:
+        SQLAlchemy async connection URL.
+
+    Returns
+    -------
+    str — UUID log_id.
+    """
+    log_id = str(uuid.uuid4())
+    now    = datetime.now(timezone.utc).isoformat()
+
+    guardrail_reason = action_result.get("guardrail_reason", "") or ""
+    guardrail_override = 1 if bool(guardrail_reason) else 0
+
+    params: Dict[str, Any] = {
+        "log_id":                   log_id,
+        "account_id":               _sha256(str(account_id)),
+        "review_month":             review_month,
+        "recommended_action":       str(action_result.get("final_action", "HOLD")),
+        "action_confidence":        float(action_result.get("action_confidence", 0.0)),
+        "guardrail_override":       guardrail_override,
+        "guardrail_reason":         guardrail_reason[:500],
+        "current_credit_limit":     int(action_result.get("current_credit_limit", 0)),
+        "proposed_credit_limit":    int(action_result.get("new_credit_limit", 0)),
+        "current_apr":              float(action_result.get("current_apr", 0.0)),
+        "proposed_apr":             float(action_result.get("new_apr", 0.0)),
+        "cnpv_delta_base":          float(action_result.get("cnpv_delta_base", 0.0)),
+        "cnpv_delta_worsening":     float(action_result.get("cnpv_delta_worsening", 0.0)),
+        "cnpv_delta_recession":     float(action_result.get("cnpv_delta_recession", 0.0)),
+        "scenario_weighted_delta":  float(action_result.get("cnpv_delta_scenario_weighted", 0.0)),
+        "incremental_rwa_usd":      float(action_result.get("incremental_rwa_usd", 0.0)),
+        "model_version_portfolio":  model_version_portfolio,
+        "feature_version":          feature_version,
+        "policy_version":           policy_version,
+        "logged_at":                now,
+    }
+
+    engine = _get_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.execute(text(_CREATE_PORTFOLIO_AUDIT_TABLE))
+        await conn.execute(text(_INSERT_PORTFOLIO_AUDIT), params)
+
+    logger.info(
+        "Portfolio audit log written: log_id=%s account_id=***%s action=%s",
+        log_id,
+        str(account_id)[-4:],
+        params["recommended_action"],
+    )
+    return log_id
+
+
+async def get_portfolio_audit_records(
+    account_id: str,
+    db_url: str,
+) -> List[Dict[str, Any]]:
+    """Retrieve all portfolio audit records for ``account_id`` (hashed lookup).
+
+    Returns
+    -------
+    List of dicts, newest first.  Returns empty list if no records found.
+    SLA: < 100ms indexed lookup on account_id.
+    """
+    hashed_id = _sha256(str(account_id))
+    engine    = _get_engine(db_url)
+
+    async with engine.connect() as conn:
+        try:
+            result = await conn.execute(
+                text(_SELECT_PORTFOLIO_AUDIT), {"account_id": hashed_id}
+            )
+        except Exception:
+            return []
+
+        rows = result.mappings().fetchall()
+        return [dict(r) for r in rows]
+
+
+# ---------------------------------------------------------------------------
+# Section 21 — governance_approval_log  (MRM lifecycle decisions — immutable)
+# ---------------------------------------------------------------------------
+
+_CREATE_GOVERNANCE_APPROVAL_LOG = """
+CREATE TABLE IF NOT EXISTS governance_approval_log (
+    approval_id         TEXT PRIMARY KEY,
+    model_name          TEXT NOT NULL,
+    model_version       TEXT NOT NULL,
+    action              TEXT NOT NULL,
+    from_stage          TEXT,
+    to_stage            TEXT,
+    performed_by        TEXT NOT NULL,
+    approved_by         TEXT,
+    performed_at        TEXT NOT NULL,
+    governance_metrics  TEXT,
+    notes               TEXT,
+    mlflow_run_id       TEXT
+);
+"""
+# action values: REGISTER / PROMOTE_STAGING / PROMOTE_PRODUCTION / ARCHIVE /
+#                VALIDATION_PASS / VALIDATION_FAIL / GOVERNANCE_OVERRIDE /
+#                REVIEW_DUE
+# Retention: 7 years.  No UPDATE, no DELETE.
+
+_INSERT_GOVERNANCE_APPROVAL = """
+INSERT INTO governance_approval_log (
+    approval_id, model_name, model_version, action,
+    from_stage, to_stage,
+    performed_by, approved_by, performed_at,
+    governance_metrics, notes, mlflow_run_id
+) VALUES (
+    :approval_id, :model_name, :model_version, :action,
+    :from_stage, :to_stage,
+    :performed_by, :approved_by, :performed_at,
+    :governance_metrics, :notes, :mlflow_run_id
+)
+"""
+
+_SELECT_GOVERNANCE_LOG = """
+SELECT * FROM governance_approval_log
+WHERE model_name = :model_name
+ORDER BY performed_at DESC
+LIMIT :limit OFFSET :offset
+"""
+
+
+async def log_governance_action(
+    model_name: str,
+    model_version: str,
+    action: str,
+    from_stage: Optional[str],
+    to_stage: Optional[str],
+    performed_by: str,
+    approved_by: Optional[str],
+    governance_metrics: Dict[str, Any],
+    notes: str,
+    mlflow_run_id: Optional[str],
+    db_url: str,
+) -> str:
+    """Write an immutable governance approval record.
+
+    Parameters
+    ----------
+    model_name:       MLflow registered model name.
+    model_version:    Model version string.
+    action:           Lifecycle action (REGISTER, PROMOTE_PRODUCTION, etc.).
+    from_stage:       Source stage (None for initial registration).
+    to_stage:         Target stage.
+    performed_by:     Email or service-account of the person/system acting.
+    approved_by:      Second approver email (required for PROMOTE_PRODUCTION).
+    governance_metrics: Metrics snapshot at time of decision (JSON-serialisable).
+    notes:            Free-text rationale.
+    mlflow_run_id:    Associated MLflow run ID (for cross-reference).
+    db_url:           SQLAlchemy async DB URL.
+
+    Returns
+    -------
+    str — UUID ``approval_id`` of the inserted record.
+    """
+    approval_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    params: Dict[str, Any] = {
+        "approval_id":        approval_id,
+        "model_name":         model_name,
+        "model_version":      str(model_version),
+        "action":             action,
+        "from_stage":         from_stage,
+        "to_stage":           to_stage,
+        "performed_by":       performed_by,
+        "approved_by":        approved_by,
+        "performed_at":       now,
+        "governance_metrics": json.dumps(governance_metrics),
+        "notes":              notes[:2000] if notes else "",
+        "mlflow_run_id":      mlflow_run_id,
+    }
+
+    engine = _get_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.execute(text(_CREATE_GOVERNANCE_APPROVAL_LOG))
+        await conn.execute(text(_INSERT_GOVERNANCE_APPROVAL), params)
+
+    logger.info(
+        "Governance action logged: approval_id=%s model=%s v%s action=%s",
+        approval_id, model_name, model_version, action,
+    )
+    return approval_id
+
+
+async def get_governance_audit_log(
+    model_name: str,
+    db_url: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> List[Dict[str, Any]]:
+    """Retrieve paginated governance audit log for *model_name*.
+
+    Returns list of dicts newest-first; ``governance_metrics`` is JSON-decoded.
+    """
+    engine = _get_engine(db_url)
+    async with engine.connect() as conn:
+        try:
+            result = await conn.execute(
+                text(_SELECT_GOVERNANCE_LOG),
+                {"model_name": model_name, "limit": limit, "offset": offset},
+            )
+        except Exception:
+            return []
+        rows = result.mappings().fetchall()
+    records = [dict(r) for r in rows]
+    for rec in records:
+        if rec.get("governance_metrics"):
+            try:
+                rec["governance_metrics"] = json.loads(rec["governance_metrics"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+    return records
+
+
+# ---------------------------------------------------------------------------
+# Section 21 — model_validation_log  (SR 11-7 independent validation records)
+# ---------------------------------------------------------------------------
+
+_CREATE_MODEL_VALIDATION_LOG = """
+CREATE TABLE IF NOT EXISTS model_validation_log (
+    validation_id       TEXT PRIMARY KEY,
+    model_name          TEXT NOT NULL,
+    model_version       TEXT NOT NULL,
+    validator_email     TEXT NOT NULL,
+    validation_date     TEXT NOT NULL,
+    validation_type     TEXT NOT NULL,
+    outcome             TEXT NOT NULL,
+    conditions          TEXT,
+    findings            TEXT,
+    test_scripts_ref    TEXT,
+    approved_for_prod   INTEGER NOT NULL,
+    notes               TEXT
+);
+"""
+# validation_type: INITIAL / ANNUAL / TRIGGERED
+# outcome: PASS / PASS_WITH_CONDITIONS / FAIL
+# approved_for_prod: 1 = True, 0 = False
+# test_scripts_ref: git SHA of the validation test scripts
+
+_INSERT_MODEL_VALIDATION = """
+INSERT INTO model_validation_log (
+    validation_id, model_name, model_version,
+    validator_email, validation_date, validation_type,
+    outcome, conditions, findings, test_scripts_ref,
+    approved_for_prod, notes
+) VALUES (
+    :validation_id, :model_name, :model_version,
+    :validator_email, :validation_date, :validation_type,
+    :outcome, :conditions, :findings, :test_scripts_ref,
+    :approved_for_prod, :notes
+)
+"""
+
+_SELECT_MODEL_VALIDATIONS = """
+SELECT * FROM model_validation_log
+WHERE model_name = :model_name
+ORDER BY validation_date DESC
+"""
+
+
+async def log_model_validation(
+    model_name: str,
+    model_version: str,
+    validator_email: str,
+    validation_type: str,
+    outcome: str,
+    conditions: Optional[List[str]],
+    findings: Optional[Dict[str, Any]],
+    test_scripts_ref: Optional[str],
+    approved_for_prod: bool,
+    notes: str,
+    db_url: str,
+) -> str:
+    """Write a model validation log entry.
+
+    Parameters
+    ----------
+    validator_email:    Must differ from model developer email (independence enforced at
+                        application layer — caller is responsible for this check).
+    validation_type:    INITIAL | ANNUAL | TRIGGERED
+    outcome:            PASS | PASS_WITH_CONDITIONS | FAIL
+    conditions:         List of required remediation items (for PASS_WITH_CONDITIONS).
+    findings:           Detailed findings dict.
+    test_scripts_ref:   Git SHA of the validation test scripts.
+    approved_for_prod:  Whether the validator approved for production promotion.
+
+    Returns
+    -------
+    str — UUID ``validation_id``.
+    """
+    validation_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+
+    params: Dict[str, Any] = {
+        "validation_id":    validation_id,
+        "model_name":       model_name,
+        "model_version":    str(model_version),
+        "validator_email":  validator_email,
+        "validation_date":  now,
+        "validation_type":  validation_type,
+        "outcome":          outcome,
+        "conditions":       json.dumps(conditions or []),
+        "findings":         json.dumps(findings or {}),
+        "test_scripts_ref": test_scripts_ref,
+        "approved_for_prod": 1 if approved_for_prod else 0,
+        "notes":            notes[:2000] if notes else "",
+    }
+
+    engine = _get_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.execute(text(_CREATE_MODEL_VALIDATION_LOG))
+        await conn.execute(text(_INSERT_MODEL_VALIDATION), params)
+
+    logger.info(
+        "Model validation logged: validation_id=%s model=%s v%s outcome=%s",
+        validation_id, model_name, model_version, outcome,
+    )
+    return validation_id
+
+
+async def get_model_validations(
+    model_name: str,
+    db_url: str,
+) -> List[Dict[str, Any]]:
+    """Retrieve all validation log entries for *model_name*, newest first.
+
+    ``conditions`` and ``findings`` are JSON-decoded.
+    Returns empty list if no records found.
+    """
+    engine = _get_engine(db_url)
+    async with engine.connect() as conn:
+        try:
+            result = await conn.execute(
+                text(_SELECT_MODEL_VALIDATIONS), {"model_name": model_name}
+            )
+        except Exception:
+            return []
+        rows = result.mappings().fetchall()
+    records = [dict(r) for r in rows]
+    for rec in records:
+        for field_name in ("conditions", "findings"):
+            if rec.get(field_name):
+                try:
+                    rec[field_name] = json.loads(rec[field_name])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        rec["approved_for_prod"] = bool(rec.get("approved_for_prod", 0))
+    return records
+
+
+async def check_validation_independence(
+    model_name: str,
+    model_version: str,
+    validator_email: str,
+    db_url: str,
+) -> bool:
+    """Return True if validator_email differs from the model developer email.
+
+    Reads the MLflow run tags (``developer_email`` tag) to verify independence.
+    If the tag is absent, logs a warning and returns True (cannot enforce).
+    """
+    try:
+        import mlflow
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+        mv = client.get_model_version(model_name, model_version)
+        if mv.run_id:
+            run = mlflow.get_run(mv.run_id)
+            developer_email = run.data.tags.get("developer_email", "")
+            if developer_email and developer_email.lower() == validator_email.lower():
+                logger.error(
+                    "Independence violation: validator_email=%s matches developer_email "
+                    "for model %s v%s — rejecting validation.",
+                    validator_email, model_name, model_version,
+                )
+                return False
+    except Exception as exc:
+        logger.warning("Could not verify validation independence: %s", exc)
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Section 21 — adverse_action_notice_queue  (FCRA/ECOA 30-day dispatch SLA)
+# ---------------------------------------------------------------------------
+
+_CREATE_ADVERSE_ACTION_QUEUE = """
+CREATE TABLE IF NOT EXISTS adverse_action_notice_queue (
+    notice_id           TEXT PRIMARY KEY,
+    account_id          TEXT NOT NULL,
+    action_type         TEXT NOT NULL,
+    reason_codes        TEXT NOT NULL,
+    review_month        TEXT NOT NULL,
+    model_version       TEXT NOT NULL,
+    enqueued_at         TEXT NOT NULL,
+    dispatch_deadline   TEXT NOT NULL,
+    dispatched_at       TEXT,
+    dispatch_channel    TEXT,
+    dispatch_status     TEXT DEFAULT 'PENDING'
+);
+"""
+# action_type: CLD / APR_UP / DECLINE
+# reason_codes: JSON array — minimum 2 items (FCRA requirement)
+# dispatch_deadline = enqueued_at + 30 days
+# dispatch_status: PENDING / SENT / FAILED
+
+_INSERT_ADVERSE_ACTION = """
+INSERT INTO adverse_action_notice_queue (
+    notice_id, account_id, action_type, reason_codes,
+    review_month, model_version,
+    enqueued_at, dispatch_deadline,
+    dispatched_at, dispatch_channel, dispatch_status
+) VALUES (
+    :notice_id, :account_id, :action_type, :reason_codes,
+    :review_month, :model_version,
+    :enqueued_at, :dispatch_deadline,
+    :dispatched_at, :dispatch_channel, :dispatch_status
+)
+"""
+
+_SELECT_PENDING_ADVERSE_ACTIONS = """
+SELECT * FROM adverse_action_notice_queue
+WHERE dispatch_status = 'PENDING'
+ORDER BY dispatch_deadline ASC
+"""
+
+_SELECT_OVERDUE_ADVERSE_ACTIONS = """
+SELECT * FROM adverse_action_notice_queue
+WHERE dispatch_status = 'PENDING'
+  AND dispatch_deadline < :now
+ORDER BY dispatch_deadline ASC
+"""
+
+
+async def enqueue_adverse_action_notice(
+    account_id: str,
+    action_type: str,
+    reason_codes: List[str],
+    review_month: str,
+    model_version: str,
+    dispatch_channel: Optional[str],
+    db_url: str,
+) -> str:
+    """Enqueue an adverse action notice for 30-day FCRA/ECOA dispatch.
+
+    Parameters
+    ----------
+    account_id:       Raw account ID (NOT hashed — needed for delivery routing).
+    action_type:      CLD | APR_UP | DECLINE
+    reason_codes:     Minimum 2 CFPB/FCRA reason codes (raises ValueError if < 2).
+    review_month:     YYYY-MM of the review batch.
+    model_version:    MLflow version of the portfolio action model.
+    dispatch_channel: EMAIL | MAIL | SMS (None = not yet assigned).
+
+    Returns
+    -------
+    str — UUID ``notice_id``.
+
+    Raises
+    ------
+    ValueError
+        If ``reason_codes`` contains fewer than 2 items (FCRA minimum).
+    """
+    if len(reason_codes) < 2:
+        raise ValueError(
+            f"FCRA requires minimum 2 reason codes; received {len(reason_codes)} "
+            f"for account_id={account_id} action={action_type}."
+        )
+
+    notice_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    # Dispatch deadline = 30 calendar days from enqueue
+    deadline = now.replace(microsecond=0) + timedelta(days=30)
+
+    params: Dict[str, Any] = {
+        "notice_id":        notice_id,
+        "account_id":       account_id,    # NOT hashed — delivery system needs it
+        "action_type":      action_type,
+        "reason_codes":     json.dumps(reason_codes),
+        "review_month":     review_month,
+        "model_version":    model_version,
+        "enqueued_at":      now.isoformat(),
+        "dispatch_deadline": deadline.isoformat(),
+        "dispatched_at":    None,
+        "dispatch_channel": dispatch_channel,
+        "dispatch_status":  "PENDING",
+    }
+
+    engine = _get_engine(db_url)
+    async with engine.begin() as conn:
+        await conn.execute(text(_CREATE_ADVERSE_ACTION_QUEUE))
+        await conn.execute(text(_INSERT_ADVERSE_ACTION), params)
+
+    logger.info(
+        "Adverse action notice enqueued: notice_id=%s account=***%s action=%s deadline=%s",
+        notice_id, str(account_id)[-4:], action_type, deadline.date(),
+    )
+    return notice_id
+
+
+async def get_adverse_action_pending(
+    db_url: str,
+) -> List[Dict[str, Any]]:
+    """Return all PENDING adverse action notices, sorted by dispatch_deadline ASC.
+
+    ``reason_codes`` is JSON-decoded.  Overdue records (deadline < now) appear first
+    since they are sorted ascending.
+    """
+    engine = _get_engine(db_url)
+    async with engine.connect() as conn:
+        try:
+            result = await conn.execute(text(_SELECT_PENDING_ADVERSE_ACTIONS))
+        except Exception:
+            return []
+        rows = result.mappings().fetchall()
+    records = [dict(r) for r in rows]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for rec in records:
+        if rec.get("reason_codes"):
+            try:
+                rec["reason_codes"] = json.loads(rec["reason_codes"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        rec["overdue"] = bool(
+            rec.get("dispatch_deadline") and rec["dispatch_deadline"] < now_iso
+        )
+    return records
+
+
+async def get_adverse_action_overdue(
+    db_url: str,
+) -> List[Dict[str, Any]]:
+    """Return all adverse action notices that have breached their 30-day SLA.
+
+    A record is overdue if ``dispatch_status = PENDING`` AND
+    ``dispatch_deadline < NOW()``.
+    """
+    engine = _get_engine(db_url)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    async with engine.connect() as conn:
+        try:
+            result = await conn.execute(
+                text(_SELECT_OVERDUE_ADVERSE_ACTIONS), {"now": now_iso}
+            )
+        except Exception:
+            return []
+        rows = result.mappings().fetchall()
+    records = [dict(r) for r in rows]
+    for rec in records:
+        if rec.get("reason_codes"):
+            try:
+                rec["reason_codes"] = json.loads(rec["reason_codes"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        rec["overdue"] = True
+    return records

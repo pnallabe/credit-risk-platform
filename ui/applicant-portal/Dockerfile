@@ -25,7 +25,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ARG NEXT_PUBLIC_DECISION_API_URL=http://localhost:8081
 ENV NEXT_PUBLIC_DECISION_API_URL=${NEXT_PUBLIC_DECISION_API_URL}
 
-RUN npm run build
+RUN npm run build && mkdir -p public
 
 # ────────────────────────────────────────────────
 # 3. Production image — minimal footprint

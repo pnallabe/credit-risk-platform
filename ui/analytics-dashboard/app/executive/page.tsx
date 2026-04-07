@@ -60,7 +60,7 @@ export default function ExecutivePage() {
           <tr><td>Total Decisions</td><td>${total}</td></tr>
           <tr><td>Approval Rate</td><td>${approvalRate}%</td></tr>
           <tr><td>Average Loan Amount</td><td>$${avgLoan}</td></tr>
-          <tr><td>Model AUC</td><td>${modelMetrics?.auc.toFixed(3) ?? "—"}</td></tr>
+          <tr><td>Model AUC</td><td>${modelMetrics?.credit_risk.auc.toFixed(3) ?? "—"}</td></tr>
           <tr><td>DIR Score</td><td>${fairReport?.dir_score.toFixed(3) ?? "—"}</td></tr>
         </table>
       </body></html>
@@ -92,12 +92,12 @@ export default function ExecutivePage() {
           <KpiCard label="Total Decisions" value={total.toLocaleString()} icon="📄" color="blue" />
           <KpiCard label="Approval Rate" value={`${approvalRate}%`} icon="✅" color="green" />
           <KpiCard label="Avg Loan Size" value={`$${avgLoan}`} icon="💵" color="blue" />
-          <KpiCard label="Model AUC" value={modelMetrics ? modelMetrics.auc.toFixed(3) : "—"} icon="🎯" color={modelMetrics && modelMetrics.auc >= 0.8 ? "green" : "amber"} />
+          <KpiCard label="Model AUC" value={modelMetrics ? modelMetrics.credit_risk.auc.toFixed(3) : "—"} icon="🎯" color={modelMetrics && modelMetrics.credit_risk.auc >= 0.8 ? "green" : "amber"} />
         </div>
 
         {/* Second KPI row */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <KpiCard label="KS Statistic" value={modelMetrics ? modelMetrics.ks.toFixed(3) : "—"} icon="📈" color={modelMetrics && modelMetrics.ks >= 0.35 ? "green" : "red"} />
+          <KpiCard label="KS Statistic" value={modelMetrics ? modelMetrics.credit_risk.ks.toFixed(3) : "—"} icon="📈" color={modelMetrics && modelMetrics.credit_risk.ks >= 0.35 ? "green" : "red"} />
           <KpiCard label="DIR Score" value={fairReport ? fairReport.dir_score.toFixed(3) : "—"} icon="⚖️" color={fairReport && fairReport.dir_score >= 0.8 ? "green" : "red"} />
           <KpiCard label="Adverse Actions" value={rejectedCount.toString()} icon="🚫" color="amber" />
           <KpiCard label="For Review" value={reviewCount.toString()} icon="🔍" color={reviewCount > 50 ? "amber" : "green"} />
@@ -157,7 +157,7 @@ export default function ExecutivePage() {
           <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 text-sm">
             {[
               { label: "ECOA Compliance", value: fairReport && fairReport.dir_score >= 0.8 ? "✅ Compliant" : "⚠️ Review Needed", color: fairReport && fairReport.dir_score >= 0.8 ? "green" : "amber" },
-              { label: "SR 11-7 Model Governance", value: modelMetrics && modelMetrics.auc >= 0.8 ? "✅ Compliant" : "⚠️ Below Threshold", color: modelMetrics && modelMetrics.auc >= 0.8 ? "green" : "amber" },
+              { label: "SR 11-7 Model Governance", value: modelMetrics && modelMetrics.credit_risk.auc >= 0.8 ? "✅ Compliant" : "⚠️ Below Threshold", color: modelMetrics && modelMetrics.credit_risk.auc >= 0.8 ? "green" : "amber" },
               { label: "Adverse Action Notices", value: `${rejectedCount} issued`, color: "neutral" },
               { label: "FCRA Disclosures", value: "✅ Current", color: "green" },
               { label: "Fair Lending Audit", value: fairReport ? `DIR: ${fairReport.dir_score.toFixed(3)}` : "—", color: fairReport && fairReport.dir_score >= 0.8 ? "green" : "red" },

@@ -40,6 +40,7 @@ DEFAULT_FEATURE_LIST: List[str] = [
     "log_annual_income",
     "dti_x_loan_amount",
     "employment_encoded",
+    "thin_file_alt_score",
 ]
 
 
@@ -342,6 +343,13 @@ def compute_features(df: pd.DataFrame, config: FeaturePipelineConfig) -> pd.Data
     result["employment_encoded"] = compute_employment_encoded(
         result["employment_status"]
     )
+    # Default thin-file alt score: 0.0 (no signal).  The credit_core enrichment
+    # step overrides this for thin-file applicants via alternative data sources.
+    if "thin_file_alt_score" in config.feature_list:
+        if "thin_file_alt_score" not in result.columns:
+            result["thin_file_alt_score"] = 0.0
+        else:
+            result["thin_file_alt_score"] = result["thin_file_alt_score"].fillna(0.0)
 
     missing = [col for col in config.feature_list if col not in result.columns]
     if missing:
