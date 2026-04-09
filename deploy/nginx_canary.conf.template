@@ -1,0 +1,55 @@
+# NGINX Upstream Weighting Template — Decision API Canary
+#
+# Usage
+# -----
+# 1. Set CANARY_WEIGHT (0–100) and STABLE_WEIGHT = 100 - CANARY_WEIGHT.
+# 2. Replace the {{...}} placeholders below (e.g. with envsubst).
+# 3. Test the config: nginx -t -c /etc/nginx/nginx.conf
+# 4. Reload NGINX: nginx -s reload
+#
+# Placeholder definitions
+# -----------------------
+# {{STABLE_WEIGHT}}   - Weight for the stable backend (integer 0–100)
+# {{CANARY_WEIGHT}}   - Weight for the canary backend (integer 0–100)
+# {{STABLE_HOST}}     - Hostname/IP of the stable decision-api instance
+# {{CANARY_HOST}}     - Hostname/IP of the canary decision-api instance
+# {{STABLE_PORT}}     - Port of the stable instance  (default: 8080)
+# {{CANARY_PORT}}     - Port of the canary instance  (default: 8080)
+#
+# Example — 10% canary:
+#   STABLE_HOST=decision-api-stable  STABLE_PORT=8080  STABLE_WEIGHT=90
+#   CANARY_HOST=decision-api-canary  CANARY_PORT=8080  CANARY_WEIGHT=10
+
+upstream decision_api {
+    server {{STABLE_HOST}}:{{STABLE_PORT}} weight={{STABLE_WEIGHT}};
+    server {{CANARY_HOST}}:{{CANARY_PORT}} weight={{CANARY_WEIGHT}};
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    server_name _;
+
+    # All API traffic — weighted split between stable and canary
+    location /v1/ {
+        proxy_pass          http://decision_api;
+        proxy_set_header    Host              $host;
+        proxy_set_header    X-Real-IP         $remote_addr;
+        proxy_set_header    X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header    X-Forwarded-Proto $scheme;
+        proxy_read_timeout  30s;
+        proxy_send_timeout  30s;
+        proxy_connect_timeout 5s;
+    }
+
+    # Health probes always hit stable to avoid false positives during rollout
+    location = /v1/health {
+        proxy_pass http://{{STABLE_HOST}}:{{STABLE_PORT}}/v1/health;
+        access_log off;
+    }
+
+    # Metrics endpoint — always hits stable (canary metrics via direct URL)
+    location = /v1/metrics {
+        proxy_pass http://{{STABLE_HOST}}:{{STABLE_PORT}}/v1/metrics;
+    }
+}

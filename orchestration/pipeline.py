@@ -81,6 +81,7 @@ class PipelineRun:
     started_at: str
     completed_at: Optional[str]
     status: str                         # "success" | "failure" | "partial"
+    tenant_id: str = ""
     stages: List[StageResult] = field(default_factory=list)
     final_payload: Dict[str, Any] = field(default_factory=dict)
     total_duration_seconds: float = 0.0
@@ -107,6 +108,7 @@ class PipelineRun:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "run_id": self.run_id,
+            "tenant_id": self.tenant_id,
             "started_at": self.started_at,
             "completed_at": self.completed_at,
             "status": self.status,
@@ -194,7 +196,7 @@ class CreditRiskPipeline:
         if bq_cfg.get("enabled", True):
             bq_writer = BQWriterAgent(config=cfg)
 
-        return cls(
+        pipeline = cls(
             ingestion_agent=DataIngestionAgent(config=cfg.get("data_ingestion", {})),
             feature_agent=FeatureEngineeringAgent(config=cfg.get("feature_engineering", {})),
             modeling_agent=RiskModelingAgent(config=cfg.get("risk_modeling", {})),
@@ -205,6 +207,11 @@ class CreditRiskPipeline:
             bq_writer_agent=bq_writer,
             orchestration_config=cfg.get("orchestration", {}),
         )
+        # G3-A: Store default_tenant_id from YAML for batch callers.
+        # Callers must still pass tenant_id explicitly — this is only a convenience
+        # accessor so they can do pipeline.run(..., tenant_id=pipeline._default_tenant_id).
+        pipeline._default_tenant_id: Optional[str] = cfg.get("default_tenant_id", None)
+        return pipeline
 
     # ------------------------------------------------------------------
     # Run
@@ -213,10 +220,10 @@ class CreditRiskPipeline:
     def run(
         self,
         applicant_dicts: List[Dict[str, Any]],
+        tenant_id: str,                          # now required, no default
         experiment_id: Optional[str] = None,
         use_challenger: bool = False,
         source: str = "pipeline",
-        tenant_id: Optional[str] = None,
     ) -> PipelineRun:
         """
         Execute the full pipeline for a list of applicant records.
@@ -225,28 +232,32 @@ class CreditRiskPipeline:
 
         Parameters
         ----------
-        tenant_id : str, optional
-            When provided, the active tenant config (policy cutoffs, feature
-            toggles) is resolved from the ConfigRegistryService and threaded
-            into the decision and feature stages.  Falls back to platform
-            defaults when None or when no config has been published.
+        tenant_id : str
+            Required. The tenant ID extracted from the request JWT.  Used to
+            scope all audit writes and to resolve per-tenant policy config.
         """
+        # G3-A: Guard — tenant_id is required for all pipeline runs
+        if not tenant_id or not tenant_id.strip():
+            raise ValueError(
+                "tenant_id is required for all pipeline runs. "
+                "Pass the tenant_id extracted from the request JWT."
+            )
+
         # P2.1 — Resolve per-tenant config for this run
-        tenant_cfg: Dict[str, Any] = {}
-        if tenant_id:
-            tenant_cfg = _CONFIG_REGISTRY.resolve(tenant_id, fallback={})
-            if tenant_cfg:
-                logger.info(
-                    "Pipeline run using tenant config for tenant=%s "
-                    "policy_cutoffs=%s feature_toggles=%s",
-                    tenant_id,
-                    list(tenant_cfg.get("policy_cutoffs", {}).keys()),
-                    list(tenant_cfg.get("feature_toggles", {}).keys()),
-                )
+        tenant_cfg: Dict[str, Any] = _CONFIG_REGISTRY.resolve(tenant_id, fallback={})
+        if tenant_cfg:
+            logger.info(
+                "Pipeline run using tenant config for tenant=%s "
+                "policy_cutoffs=%s feature_toggles=%s",
+                tenant_id,
+                list(tenant_cfg.get("policy_cutoffs", {}).keys()),
+                list(tenant_cfg.get("feature_toggles", {}).keys()),
+            )
 
         run_id = str(uuid.uuid4())
         pipeline_run = PipelineRun(
             run_id=run_id,
+            tenant_id=tenant_id,
             started_at=datetime.utcnow().isoformat(),
             completed_at=None,
             status="running",
@@ -302,8 +313,7 @@ class CreditRiskPipeline:
             }
             if tenant_cfg.get("policy_cutoffs"):
                 dec_payload["policy_overrides"] = tenant_cfg["policy_cutoffs"]
-            if tenant_id:
-                dec_payload["tenant_id"] = tenant_id
+            dec_payload["tenant_id"] = tenant_id
             dec_result = with_retry(
                 lambda: self._decision.execute(dec_payload),
                 attempts=self._retry,
@@ -352,6 +362,7 @@ class CreditRiskPipeline:
                     bq_payload["scores"]   = model_result.payload.get("model_scores", [])
                     bq_payload["decisions"] = dec_result.payload.get("decisions", [])
                     bq_payload["explanations"] = explain_result.payload.get("explanations", [])
+                    bq_payload["tenant_id"] = tenant_id
                     bq_result = self._bq_writer.execute(bq_payload)
                     pipeline_run.add_stage(bq_result)
                     if bq_result.ok:

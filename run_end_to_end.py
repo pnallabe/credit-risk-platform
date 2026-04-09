@@ -210,6 +210,7 @@ def main(args: argparse.Namespace) -> int:
     t0 = time.perf_counter()
     run = pipeline.run(
         applicant_dicts=applicants,
+        tenant_id=args.tenant_id,
         experiment_id=args.experiment_id or None,
         use_challenger=args.use_challenger,
         source="cli",
@@ -327,6 +328,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Route traffic to challenger model",
+    )
+    parser.add_argument(
+        "--tenant-id",
+        type=str,
+        default="platform-default",
+        help="Tenant ID for the pipeline run (required for production; defaults to 'platform-default' for local runs)",
     )
     return parser.parse_args()
 

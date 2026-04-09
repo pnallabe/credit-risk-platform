@@ -28,6 +28,8 @@ import warnings
 from pathlib import Path
 from typing import Optional
 
+from monitoring.alert_router import AlertRouter, DEFAULT_ALERT_ROUTER
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -47,6 +49,12 @@ PROJECT_ROOT = Path(__file__).parent.parent
 DATA_DIR     = PROJECT_ROOT / "data" / "raw" / "cc_pd"
 REPORT_DIR   = PROJECT_ROOT / "monitoring" / "cc_pd_reports"
 REPORT_DIR.mkdir(parents=True, exist_ok=True)
+
+# ── Drift / performance thresholds (PRD §4.8) ─────────────────────────────────
+PSI_CRITICAL_THRESHOLD = 0.20   # PRD §4.8
+AUROC_MIN_THRESHOLD    = 0.70   # PRD §4.8
+KS_MIN_THRESHOLD       = 0.30   # PRD §4.8
+DR_MAX_THRESHOLD       = 0.12   # PRD §4.8
 
 
 # ── PSI ────────────────────────────────────────────────────────────────────────
@@ -329,7 +337,23 @@ def plot_rolling_perf(perf_df: pd.DataFrame, path: Path) -> None:
 
 # ── Full monitoring run ────────────────────────────────────────────────────────
 
-def run_monitoring(sample: int = 200_000, export_xlsx: bool = False) -> dict:
+def run_monitoring(
+    sample: int = 200_000,
+    export_xlsx: bool = False,
+    alert_router: AlertRouter | None = None,
+) -> dict:
+    """Run the full CC PD monitoring pipeline.
+
+    Parameters
+    ----------
+    sample:
+        Number of records to sub-sample for fast monitoring runs.
+    export_xlsx:
+        If True, write the report to an Excel file under ``REPORT_DIR``.
+    alert_router:
+        Optional :class:`~monitoring.alert_router.AlertRouter` instance used
+        to dispatch drift alerts. Defaults to ``DEFAULT_ALERT_ROUTER``.
+    """
     log.info("=" * 60)
     log.info("CC PD Model & Portfolio Monitor")
     log.info("=" * 60)
@@ -414,23 +438,30 @@ def run_monitoring(sample: int = 200_000, export_xlsx: bool = False) -> dict:
     log.info("  Plots saved to %s", REPORT_DIR)
 
     # ── Alert summary ──────────────────────────────────────────────────────
+    router = alert_router or DEFAULT_ALERT_ROUTER
     alerts = []
-    if psi_val >= 0.25:
-        alerts.append(f"CRITICAL: Score PSI={psi_val:.3f} — population shift detected")
-    if psi_val >= 0.10:
+    if psi_val >= PSI_CRITICAL_THRESHOLD:
+        alerts.append(f"CRITICAL: Score PSI={psi_val:.3f} — population shift detected (threshold={PSI_CRITICAL_THRESHOLD})")
+    elif psi_val >= 0.10:
         alerts.append(f"WARNING : Score PSI={psi_val:.3f} — monitor closely")
-    if not perf_df.empty and perf_df["auroc"].iloc[-1] < 0.70:
-        alerts.append(f"CRITICAL: AUROC={perf_df['auroc'].iloc[-1]:.3f} < 0.70 — consider retrain")
-    if not perf_df.empty and perf_df["ks"].iloc[-1] < 0.30:
-        alerts.append(f"WARNING : KS={perf_df['ks'].iloc[-1]:.3f} < 0.30")
+    if not perf_df.empty and perf_df["auroc"].iloc[-1] < AUROC_MIN_THRESHOLD:
+        alerts.append(f"CRITICAL: AUROC={perf_df['auroc'].iloc[-1]:.3f} < {AUROC_MIN_THRESHOLD} — consider retrain")
+    if not perf_df.empty and perf_df["ks"].iloc[-1] < KS_MIN_THRESHOLD:
+        alerts.append(f"WARNING : KS={perf_df['ks'].iloc[-1]:.3f} < {KS_MIN_THRESHOLD}")
     dr = df["default_flag"].mean()
-    if dr > 0.12:
-        alerts.append(f"WARNING : Portfolio default rate={dr:.2%} exceeds 12% threshold")
+    if dr > DR_MAX_THRESHOLD:
+        alerts.append(f"WARNING : Portfolio default rate={dr:.2%} exceeds {DR_MAX_THRESHOLD:.0%} threshold")
 
     log.info("\n── Monitoring Alerts ────────────────────────────────────────")
     if alerts:
         for a in alerts:
             log.warning(a)
+            severity = "CRITICAL" if a.startswith("CRITICAL") else "HIGH"
+            router.send_alert(
+                severity=severity,
+                title=f"Model Drift Detected — {severity}",
+                body=a,
+            )
     else:
         log.info("  All checks PASSED — no alerts.")
 

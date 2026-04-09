@@ -30,6 +30,7 @@ from feature_pipeline.features import FeaturePipelineConfig, compute_features
 from models.credit_risk.predict import predict_pd
 from models.fraud_detection.predict import predict_fraud
 from models.pricing.engine import PricingConfig, calculate_pricing
+from audit.tenant_guard import TenantContext, scoped_tenant
 
 
 FEATURE_CONFIG = FeaturePipelineConfig()
@@ -142,6 +143,11 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Path to input Parquet or CSV file")
     parser.add_argument("--output", required=True, help="Path to write output Parquet file")
     parser.add_argument("--limit", type=int, default=None, help="Limit number of rows (for testing)")
+    parser.add_argument(
+        "--tenant-id",
+        required=True,
+        help="Tenant ID for this batch run (required for tenant-scoped audit writes)",
+    )
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -159,10 +165,16 @@ def main() -> None:
         df = df.head(args.limit)
     print(f"Loaded {len(df):,} applications")
 
-    t0 = time.perf_counter()
-    results_df = _score_batch_sync(df)
-    elapsed = time.perf_counter() - t0
-    print(f"Scoring complete in {elapsed:.2f}s ({len(results_df)/elapsed:.0f} apps/sec)")
+    # G3-C: Wrap execution in scoped_tenant so all downstream calls inherit tenant context
+    with scoped_tenant(TenantContext(
+        tenant_id=args.tenant_id,
+        source="batch_job",
+        authorized_by="cli",
+    )):
+        t0 = time.perf_counter()
+        results_df = _score_batch_sync(df)
+        elapsed = time.perf_counter() - t0
+        print(f"Scoring complete in {elapsed:.2f}s ({len(results_df)/elapsed:.0f} apps/sec)")
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
