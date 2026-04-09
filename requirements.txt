@@ -39,3 +39,9 @@ google-auth>=2.29
 pre-commit>=3.7
 detect-secrets>=1.5
 google-cloud-bigquery>=3.11
+
+# P2 — Adverse Action PDF generation
+reportlab>=4.0.0
+
+# P2 — PDF testing (byte-level validation); move to requirements-dev.txt if desired
+pypdf>=3.0.0

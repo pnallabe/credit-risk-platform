@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "config_registry.db"
 
-# DDL — mirrors migration 004
+# DDL — mirrors migration 004 + G11-A status column
 _DDL = """
 CREATE TABLE IF NOT EXISTS tenants (
     tenant_id             TEXT PRIMARY KEY,
@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS tenant_configs (
     is_rollback              INTEGER NOT NULL DEFAULT 0,
     rollback_source_version  TEXT,
     created_at               TEXT NOT NULL,
+    status                   TEXT NOT NULL DEFAULT 'active',
     UNIQUE (tenant_id, config_version),
     FOREIGN KEY (tenant_id) REFERENCES tenants (tenant_id)
 );
@@ -95,13 +96,43 @@ CREATE INDEX IF NOT EXISTS idx_tc_tenant_version
 CREATE TABLE IF NOT EXISTS config_audit_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     tenant_id   TEXT NOT NULL,
-    event_type  TEXT NOT NULL,   -- 'publish' | 'activate' | 'rollback' | 'deactivate'
+    event_type  TEXT NOT NULL,   -- 'publish' | 'activate' | 'rollback' | 'deactivate' | 'stage' | 'APPROVED' | 'REJECTED'
     version_tag TEXT,
     actor       TEXT NOT NULL,
     note        TEXT,
     created_at  TEXT NOT NULL
 );
 """
+
+
+def migrate_config_schema(db_url: str) -> None:
+    """Idempotently add the ``status`` column to ``tenant_configs`` if absent.
+
+    Mirrors the pattern used by ``audit.logger.migrate_audit_schema()``.
+    Safe to call on every server start.
+
+    Parameters
+    ----------
+    db_url : str
+        Path to the SQLite file (or SQLAlchemy URL for SQLite).
+    """
+    db_path = db_url.replace("sqlite:///", "").replace("sqlite+aiosqlite:///", "")
+    if db_path.startswith("postgresql"):
+        logger.info("migrate_config_schema: skipped for PostgreSQL (manual migration required)")
+        return
+    conn = sqlite3.connect(db_path)
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(tenant_configs)")]
+        if "status" not in cols:
+            conn.execute(
+                "ALTER TABLE tenant_configs ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
+            )
+            conn.commit()
+            logger.info("migrate_config_schema: added 'status' column to tenant_configs")
+        else:
+            logger.debug("migrate_config_schema: 'status' column already present")
+    finally:
+        conn.close()
 
 
 class ConfigRegistryService:
@@ -212,6 +243,13 @@ class ConfigRegistryService:
     ) -> TenantConfigVersion:
         """Publish a new config version for a tenant.
 
+        .. deprecated::
+            For production environments prefer the two-step
+            ``stage_config()`` + ``approve_staged_config()`` workflow which
+            enforces four-eyes review.  This method is retained as a
+            backward-compatible shortcut for callers that supply a trusted
+            ``approved_by`` parameter (e.g. automated tests or dev environments).
+
         Parameters
         ----------
         tenant_id : str
@@ -269,8 +307,8 @@ class ConfigRegistryService:
                     INSERT INTO tenant_configs
                         (tenant_id, config_version, config_sha256, approved_by,
                          approved_at, config_json, note, is_rollback,
-                         rollback_source_version, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                         rollback_source_version, created_at, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, 'active')
                     """,
                     (
                         cv.tenant_id,
@@ -322,11 +360,298 @@ class ConfigRegistryService:
     # ------------------------------------------------------------------
 
     def get_active(self, tenant_id: str) -> Optional[TenantConfigVersion]:
-        """Return the currently active config for a tenant, or None."""
+        """Return the currently active config for a tenant, or None.
+
+        Only returns rows with ``status = 'active'``.  Staged or
+        superseded rows are excluded.
+        """
         tenant = self.get_tenant(tenant_id)
         if not tenant or not tenant.active_config_version:
             return None
-        return self.get_version(tenant_id, tenant.active_config_version)
+        cv = self.get_version(tenant_id, tenant.active_config_version)
+        if cv is not None and getattr(cv, "status", "active") not in (None, "active"):
+            return None
+        return cv
+
+    def get_staged(self, tenant_id: str) -> Optional[TenantConfigVersion]:
+        """Return the pending staged config version for a tenant, or None.
+
+        Returns the most-recent row with ``status = 'staged'``.
+        """
+        with self._lock:
+            conn = self._connect()
+            row = conn.execute(
+                "SELECT * FROM tenant_configs "
+                "WHERE tenant_id = ? AND status = 'staged' "
+                "ORDER BY id DESC LIMIT 1",
+                (tenant_id,),
+            ).fetchone()
+            conn.close()
+        return _row_to_config(row) if row else None
+
+    # ------------------------------------------------------------------
+    # G11-A: Staging workflow
+    # ------------------------------------------------------------------
+
+    def stage_config(
+        self,
+        tenant_id: str,
+        config_json: dict,
+        authored_by: str,
+        note: str,
+    ) -> TenantConfigVersion:
+        """Insert a new config row with ``status='staged'``.
+
+        The staged config is NOT activated until
+        ``approve_staged_config()`` is called.
+
+        Parameters
+        ----------
+        tenant_id : str
+            Must already exist in the ``tenants`` table.
+        config_json : dict
+            New configuration dictionary.
+        authored_by : str
+            Email/identity of the person staging the change.
+        note : str
+            Mandatory rationale for the change.
+
+        Returns
+        -------
+        TenantConfigVersion
+            The staged version (including generated ``version_tag``).
+
+        Raises
+        ------
+        ValueError
+            If tenant doesn't exist, or if a staged version already exists
+            for this tenant.
+        """
+        if not self.get_tenant(tenant_id):
+            raise ValueError(f"Tenant '{tenant_id}' not found. Call ensure_tenant() first.")
+
+        existing_staged = self.get_staged(tenant_id)
+        if existing_staged is not None:
+            raise ValueError(
+                f"A staged version '{existing_staged.config_version}' already exists for "
+                f"tenant '{tenant_id}'. Approve or reject it before staging a new one."
+            )
+
+        versions = self.list_versions(tenant_id)
+        next_seq = len(versions) + 1
+        version_tag = f"v{next_seq}"
+        now = _utcnow()
+
+        cv = TenantConfigVersion(
+            tenant_id=tenant_id,
+            config_version=version_tag,
+            config_json=config_json,
+            approved_by=authored_by,
+            note=note,
+            approved_at=datetime.now(timezone.utc),
+        )
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO tenant_configs
+                        (tenant_id, config_version, config_sha256, approved_by,
+                         approved_at, config_json, note, is_rollback,
+                         rollback_source_version, created_at, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, 'staged')
+                    """,
+                    (
+                        cv.tenant_id,
+                        cv.config_version,
+                        cv.config_sha256,
+                        cv.approved_by,
+                        cv.approved_at.isoformat(),
+                        json.dumps(cv.config_json),
+                        cv.note,
+                        now,
+                    ),
+                )
+                row = conn.execute("SELECT last_insert_rowid() AS id").fetchone()
+                cv.id = row["id"]
+                cv.created_at = datetime.fromisoformat(now)
+
+                _write_audit_event(
+                    conn,
+                    tenant_id=tenant_id,
+                    event_type="stage",
+                    version_tag=version_tag,
+                    actor=authored_by,
+                    note=note,
+                    created_at=now,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        logger.info(
+            "Config staged for tenant=%s version=%s (pending four-eyes approval)",
+            tenant_id,
+            version_tag,
+        )
+        return cv
+
+    def approve_staged_config(
+        self,
+        tenant_id: str,
+        staged_version_tag: str,
+        approver_email: str,
+        actor_email: str,
+    ) -> TenantConfigVersion:
+        """Promote a staged version to active.
+
+        Steps
+        -----
+        1. Load the staged ConfigVersion; raise ValueError if not found or
+           ``status != 'staged'``.
+        2. Call ``compliance.rbac.enforce_four_eyes()`` — raises
+           ``SeparationOfDutiesViolation`` if actor == approver.
+        3. Mark all existing ``'active'`` versions for this tenant as
+           ``'superseded'``.
+        4. Set staged row's status = ``'active'``,
+           ``effective_from = utcnow()``.
+        5. Write an audit event row with ``event_type='APPROVED'``.
+        6. Return the now-active ConfigVersion.
+
+        Parameters
+        ----------
+        tenant_id : str
+        staged_version_tag : str
+            Version tag of the staged config row to promote.
+        approver_email : str
+            Email of the approving person.
+        actor_email : str
+            Email of the person who authored/staged the change.
+
+        Raises
+        ------
+        ValueError
+            If the staged version is not found or is not in ``'staged'`` status.
+        SeparationOfDutiesViolation
+            If ``actor_email == approver_email``.
+        """
+        from compliance.rbac import enforce_four_eyes  # noqa: PLC0415
+
+        # 1. Load staged version
+        staged = self.get_version(tenant_id, staged_version_tag)
+        if staged is None:
+            raise ValueError(
+                f"Staged version '{staged_version_tag}' not found for tenant '{tenant_id}'."
+            )
+        if getattr(staged, "status", None) != "staged":
+            raise ValueError(
+                f"Version '{staged_version_tag}' has status "
+                f"'{getattr(staged, 'status', 'unknown')}', not 'staged'."
+            )
+
+        # 2. Four-eyes check
+        enforce_four_eyes(
+            action="policy_stage_6_committee_approval",
+            actor_email=actor_email,
+            approver_email=approver_email,
+        )
+
+        now = _utcnow()
+
+        with self._lock:
+            conn = self._connect()
+            try:
+                # 3. Supersede all existing active versions
+                conn.execute(
+                    "UPDATE tenant_configs SET status = 'superseded' "
+                    "WHERE tenant_id = ? AND status = 'active'",
+                    (tenant_id,),
+                )
+
+                # 4. Activate the staged version
+                conn.execute(
+                    "UPDATE tenant_configs SET status = 'active', approved_at = ? "
+                    "WHERE tenant_id = ? AND config_version = ?",
+                    (now, tenant_id, staged_version_tag),
+                )
+
+                # Update the tenants pointer
+                conn.execute(
+                    "UPDATE tenants SET active_config_version = ?, updated_at = ? "
+                    "WHERE tenant_id = ?",
+                    (staged_version_tag, now, tenant_id),
+                )
+
+                # 5. Audit
+                _write_audit_event(
+                    conn,
+                    tenant_id=tenant_id,
+                    event_type="APPROVED",
+                    version_tag=staged_version_tag,
+                    actor=approver_email,
+                    note=f"Four-eyes approval by {approver_email} (author: {actor_email})",
+                    created_at=now,
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
+        logger.info(
+            "Config approved and activated for tenant=%s version=%s by %s",
+            tenant_id,
+            staged_version_tag,
+            approver_email,
+        )
+        return self.get_version(tenant_id, staged_version_tag)  # type: ignore[return-value]
+
+    def reject_staged_config(
+        self,
+        tenant_id: str,
+        staged_version_tag: str,
+        rejected_by: str,
+        reason: str,
+    ) -> None:
+        """Set a staged version's status to ``'rejected'``.
+
+        Does not raise if the version is not found — logs a warning instead.
+        Writes an audit event with ``event_type='REJECTED'``.
+        """
+        now = _utcnow()
+        with self._lock:
+            conn = self._connect()
+            try:
+                result = conn.execute(
+                    "UPDATE tenant_configs SET status = 'rejected' "
+                    "WHERE tenant_id = ? AND config_version = ? AND status = 'staged'",
+                    (tenant_id, staged_version_tag),
+                )
+                if result.rowcount == 0:
+                    logger.warning(
+                        "reject_staged_config: version '%s' not found or not staged for tenant '%s'",
+                        staged_version_tag,
+                        tenant_id,
+                    )
+                else:
+                    _write_audit_event(
+                        conn,
+                        tenant_id=tenant_id,
+                        event_type="REJECTED",
+                        version_tag=staged_version_tag,
+                        actor=rejected_by,
+                        note=reason,
+                        created_at=now,
+                    )
+                conn.commit()
+            finally:
+                conn.close()
+
+        logger.info(
+            "Config rejected for tenant=%s version=%s by %s",
+            tenant_id,
+            staged_version_tag,
+            rejected_by,
+        )
 
     def get_version(
         self,
@@ -439,8 +764,8 @@ class ConfigRegistryService:
                     INSERT INTO tenant_configs
                         (tenant_id, config_version, config_sha256, approved_by,
                          approved_at, config_json, note, is_rollback,
-                         rollback_source_version, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                         rollback_source_version, created_at, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'active')
                     """,
                     (
                         tenant_id,
@@ -570,6 +895,9 @@ def _row_to_config(row: sqlite3.Row) -> TenantConfigVersion:
     cv.config_sha256 = row["config_sha256"]
     cv.approved_at = datetime.fromisoformat(row["approved_at"])
     cv.created_at = datetime.fromisoformat(row["created_at"])
+    # G11-A: read status column (default to 'active' for rows without the column)
+    row_dict = dict(row)
+    cv.status = row_dict.get("status", "active") or "active"  # type: ignore[attr-defined]
     return cv
 
 

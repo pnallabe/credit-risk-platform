@@ -137,3 +137,12 @@ Thumbs.db
 data/Freddiemac/*.zip
 data/Freddiemac/*.csv
 data/Freddiemac/*.txt
+
+# SQLite in-memory/temp artifacts
+:memory:*
+*.db-shm
+*.db-wal
+batch_results_*.json
+stress_test_results.db
+webhooks.db
+batch_jobs.db

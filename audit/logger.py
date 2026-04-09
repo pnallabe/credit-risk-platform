@@ -99,7 +99,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
     recommended_credit_limit    INTEGER,
     scenario_name               TEXT,
     model_version_valuation     TEXT,
-    policy_version              TEXT
+    policy_version              TEXT,
+    record_hash       TEXT,
+    previous_hash     TEXT,
+    hash_algorithm    TEXT NOT NULL DEFAULT 'sha256'
 );
 """
 
@@ -122,6 +125,30 @@ INSERT INTO audit_log (
     :ftp_rate_bps, :rwa_usd, :capital_available_usd,
     :acquisition_signal, :recommended_apr, :recommended_credit_limit,
     :scenario_name, :model_version_valuation, :policy_version
+)
+"""
+
+_INSERT_AUDIT_WITH_HASH = """
+INSERT INTO audit_log (
+    log_id, tenant_id, application_id, logged_at, input_features,
+    model_version, feature_version,
+    fraud_score, risk_score,
+    decision_output, reason_codes, decision_latency_ms,
+    scenario_weighted_cnpv, cnpv_base, cnpv_worsening, cnpv_recession,
+    ftp_rate_bps, rwa_usd, capital_available_usd,
+    acquisition_signal, recommended_apr, recommended_credit_limit,
+    scenario_name, model_version_valuation, policy_version,
+    record_hash, previous_hash, hash_algorithm
+) VALUES (
+    :log_id, :tenant_id, :application_id, :logged_at, :input_features,
+    :model_version, :feature_version,
+    :fraud_score, :risk_score,
+    :decision_output, :reason_codes, :decision_latency_ms,
+    :scenario_weighted_cnpv, :cnpv_base, :cnpv_worsening, :cnpv_recession,
+    :ftp_rate_bps, :rwa_usd, :capital_available_usd,
+    :acquisition_signal, :recommended_apr, :recommended_credit_limit,
+    :scenario_name, :model_version_valuation, :policy_version,
+    :record_hash, :previous_hash, :hash_algorithm
 )
 """
 
@@ -157,7 +184,10 @@ CREATE TABLE IF NOT EXISTS portfolio_audit_log (
     model_version_portfolio TEXT,
     feature_version         TEXT,
     policy_version          TEXT,
-    logged_at               TEXT NOT NULL
+    logged_at               TEXT NOT NULL,
+    record_hash       TEXT,
+    previous_hash     TEXT,
+    hash_algorithm    TEXT NOT NULL DEFAULT 'sha256'
 );
 """
 
@@ -185,6 +215,32 @@ INSERT INTO portfolio_audit_log (
 )
 """
 
+_INSERT_PORTFOLIO_AUDIT_WITH_HASH = """
+INSERT INTO portfolio_audit_log (
+    log_id, account_id, review_month,
+    recommended_action, action_confidence,
+    guardrail_override, guardrail_reason,
+    current_credit_limit, proposed_credit_limit,
+    current_apr, proposed_apr,
+    cnpv_delta_base, cnpv_delta_worsening, cnpv_delta_recession,
+    scenario_weighted_delta, incremental_rwa_usd,
+    model_version_portfolio, feature_version, policy_version,
+    logged_at,
+    record_hash, previous_hash, hash_algorithm
+) VALUES (
+    :log_id, :account_id, :review_month,
+    :recommended_action, :action_confidence,
+    :guardrail_override, :guardrail_reason,
+    :current_credit_limit, :proposed_credit_limit,
+    :current_apr, :proposed_apr,
+    :cnpv_delta_base, :cnpv_delta_worsening, :cnpv_delta_recession,
+    :scenario_weighted_delta, :incremental_rwa_usd,
+    :model_version_portfolio, :feature_version, :policy_version,
+    :logged_at,
+    :record_hash, :previous_hash, :hash_algorithm
+)
+"""
+
 _SELECT_PORTFOLIO_AUDIT = """
 SELECT * FROM portfolio_audit_log WHERE account_id = :account_id
 ORDER BY logged_at DESC LIMIT 100
@@ -202,6 +258,63 @@ def _get_engine(db_url: str) -> AsyncEngine:
     if db_url not in _ENGINE_CACHE:
         _ENGINE_CACHE[db_url] = create_async_engine(db_url, echo=False)
     return _ENGINE_CACHE[db_url]
+
+
+# ---------------------------------------------------------------------------
+# Hash chain helper (module-level so adverse_action_store can import it)
+# ---------------------------------------------------------------------------
+
+async def compute_chain_hash(
+    conn: Any,
+    log_id: str,
+    logged_at: str,
+    canonical_payload: str,
+    partition_value: str,
+    table: str = "audit_log",
+    partition_field: str = "tenant_id",
+    timestamp_field: str = "logged_at",
+    id_field: str = "log_id",
+) -> tuple:
+    """Compute (record_hash, previous_hash) for a new chain entry.
+
+    Parameters
+    ----------
+    conn:
+        Active SQLAlchemy async connection (must be inside a transaction so
+        no other row can be inserted between the SELECT and the caller's INSERT).
+    log_id:
+        UUID of the row being inserted.
+    logged_at:
+        ISO-8601 UTC timestamp of the row being inserted.
+    canonical_payload:
+        ``json.dumps(..., sort_keys=True, separators=(',',':'))`` of the
+        fields relevant to the table (decision fields for audit_log, etc.).
+    partition_value:
+        Value of the partition key (tenant_id for audit_log,
+        account_id for portfolio_audit_log, etc.).
+    table:
+        Table name to query for the previous hash.
+    partition_field:
+        Column name used to scope the chain per partition.
+
+    Returns
+    -------
+    tuple[str, str]
+        ``(record_hash, previous_hash)`` where ``previous_hash`` is the
+        empty string ``""`` for the very first row in the partition.
+    """
+    query = text(
+        f"SELECT record_hash FROM {table}"
+        f" WHERE {partition_field} = :pval"
+        f" ORDER BY {timestamp_field} DESC, {id_field} ASC LIMIT 1"
+    )
+    result = await conn.execute(query, {"pval": partition_value})
+    row = result.fetchone()
+    previous_hash: str = (row[0] or "") if row else ""
+
+    raw = previous_hash + "|" + log_id + "|" + logged_at + "|" + canonical_payload
+    record_hash = _sha256(raw)
+    return record_hash, previous_hash
 
 
 # ---------------------------------------------------------------------------
@@ -311,11 +424,38 @@ async def log_decision(
         "policy_version":           dr_dict.get("policy_version"),
     }
 
+    # Build canonical payload for hash chain (keys sorted alphabetically)
+    canonical_payload = json.dumps(
+        {
+            "decision_output": params["decision_output"],
+            "fraud_score": params["fraud_score"],
+            "reason_codes": params["reason_codes"],
+            "risk_score": params["risk_score"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
     engine = _get_engine(db_url)
 
     async with engine.begin() as conn:
         await conn.execute(text(_CREATE_AUDIT_TABLE))
-        await conn.execute(text(_INSERT_AUDIT), params)
+        try:
+            record_hash, previous_hash = await compute_chain_hash(
+                conn, log_id, now, canonical_payload, tenant_id, table="audit_log"
+            )
+            hash_params = {
+                **params,
+                "record_hash": record_hash,
+                "previous_hash": previous_hash,
+                "hash_algorithm": "sha256",
+            }
+            await conn.execute(text(_INSERT_AUDIT_WITH_HASH), hash_params)
+        except Exception as _hash_exc:
+            logger.debug(
+                "Hash chain write skipped (pre-migration schema): %s", _hash_exc
+            )
+            await conn.execute(text(_INSERT_AUDIT), params)
 
     logger.info(
         "Audit log written: log_id=%s tenant_id=%s application_id=%s decision=%s",
@@ -452,10 +592,39 @@ async def log_portfolio_action(
         "logged_at":                now,
     }
 
+    # Build canonical payload for hash chain
+    canonical_payload = json.dumps(
+        {
+            "model_version_portfolio": params["model_version_portfolio"],
+            "policy_version": params["policy_version"],
+            "recommended_action": params["recommended_action"],
+            "scenario_weighted_delta": params["scenario_weighted_delta"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
     engine = _get_engine(db_url)
     async with engine.begin() as conn:
         await conn.execute(text(_CREATE_PORTFOLIO_AUDIT_TABLE))
-        await conn.execute(text(_INSERT_PORTFOLIO_AUDIT), params)
+        try:
+            record_hash, previous_hash = await compute_chain_hash(
+                conn, log_id, params["logged_at"], canonical_payload,
+                params["account_id"], table="portfolio_audit_log",
+                partition_field="account_id",
+            )
+            hash_params = {
+                **params,
+                "record_hash": record_hash,
+                "previous_hash": previous_hash,
+                "hash_algorithm": "sha256",
+            }
+            await conn.execute(text(_INSERT_PORTFOLIO_AUDIT_WITH_HASH), hash_params)
+        except Exception as _hash_exc:
+            logger.debug(
+                "Hash chain write skipped (pre-migration schema): %s", _hash_exc
+            )
+            await conn.execute(text(_INSERT_PORTFOLIO_AUDIT), params)
 
     logger.info(
         "Portfolio audit log written: log_id=%s account_id=***%s action=%s",
@@ -972,4 +1141,222 @@ async def get_adverse_action_overdue(
             except (json.JSONDecodeError, TypeError):
                 pass
         rec["overdue"] = True
+    return records
+
+
+# ---------------------------------------------------------------------------
+# P2-D — adverse_action_log table (Reg B compliance notices)
+# ---------------------------------------------------------------------------
+
+_CREATE_ADVERSE_ACTION_TABLE = """
+CREATE TABLE IF NOT EXISTS adverse_action_log (
+    notice_id           TEXT PRIMARY KEY,
+    application_id      TEXT NOT NULL,
+    tenant_id           TEXT NOT NULL,
+    action_date         TEXT NOT NULL,
+    deadline_date       TEXT NOT NULL,
+    reason_codes        TEXT NOT NULL,
+    form_type           TEXT NOT NULL,
+    credit_score_used   INTEGER,
+    bureau_name         TEXT,
+    generated_at        TEXT NOT NULL,
+    delivery_channel    TEXT,
+    delivered_at        TEXT,
+    delivery_status     TEXT NOT NULL DEFAULT 'PENDING',
+    notice_hash         TEXT,
+    record_hash         TEXT,
+    previous_hash       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_aa_tenant_app  ON adverse_action_log(tenant_id, application_id);
+CREATE INDEX IF NOT EXISTS idx_aa_deadline    ON adverse_action_log(deadline_date);
+CREATE INDEX IF NOT EXISTS idx_aa_status      ON adverse_action_log(delivery_status);
+"""
+
+
+# ---------------------------------------------------------------------------
+# P1-A — Schema migration: idempotently add hash-chain columns
+# ---------------------------------------------------------------------------
+
+async def migrate_audit_schema(db_url: str) -> None:
+    """Idempotently add hash-chain columns to audit_log and portfolio_audit_log.
+
+    Safe to call multiple times.  If the columns already exist, no
+    ``ALTER TABLE`` is issued.  If the table doesn't exist yet, the base DDL
+    creates it (including the hash columns).
+
+    Parameters
+    ----------
+    db_url:
+        SQLAlchemy async connection URL.  Supports both
+        ``sqlite+aiosqlite://`` and ``postgresql+asyncpg://`` schemes.
+    """
+    is_postgres = db_url.startswith("postgresql")
+    engine = _get_engine(db_url)
+
+    tables_to_migrate = [
+        ("audit_log", _CREATE_AUDIT_TABLE),
+        ("portfolio_audit_log", _CREATE_PORTFOLIO_AUDIT_TABLE),
+        ("adverse_action_log", _CREATE_ADVERSE_ACTION_TABLE),
+    ]
+    new_columns = [
+        ("record_hash", "TEXT"),
+        ("previous_hash", "TEXT"),
+        ("hash_algorithm", "TEXT NOT NULL DEFAULT 'sha256'"),
+    ]
+
+    for table_name, create_ddl in tables_to_migrate:
+        try:
+            async with engine.begin() as conn:
+                # Ensure the table exists first
+                for stmt in create_ddl.strip().split(";"):
+                    stmt = stmt.strip()
+                    if stmt:
+                        await conn.execute(text(stmt))
+
+                # Discover existing columns
+                if is_postgres:
+                    result = await conn.execute(
+                        text(
+                            "SELECT column_name FROM information_schema.columns "
+                            "WHERE table_name = :tbl"
+                        ),
+                        {"tbl": table_name},
+                    )
+                    existing_cols = {row[0] for row in result}
+                else:
+                    result = await conn.execute(
+                        text(f"PRAGMA table_info({table_name})")
+                    )
+                    existing_cols = {row[1] for row in result.fetchall()}
+
+                for col_name, col_type in new_columns:
+                    if col_name not in existing_cols:
+                        await conn.execute(
+                            text(
+                                f"ALTER TABLE {table_name}"
+                                f" ADD COLUMN {col_name} {col_type}"
+                            )
+                        )
+                        logger.info(
+                            "Added column %s to %s", col_name, table_name
+                        )
+        except Exception as exc:
+            logger.error(
+                "migrate_audit_schema failed for table=%s: %s", table_name, exc
+            )
+            raise
+
+
+async def audit_schema_version(db_url: str) -> str:
+    """Return ``'v2-hash-chain'`` if ``record_hash`` column exists, else ``'v1-no-chain'``.
+
+    Never raises — returns ``'v1-no-chain'`` on any error.
+    """
+    try:
+        engine = _get_engine(db_url)
+        is_postgres = db_url.startswith("postgresql")
+        async with engine.connect() as conn:
+            if is_postgres:
+                result = await conn.execute(
+                    text(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_name = 'audit_log' AND column_name = 'record_hash'"
+                    )
+                )
+                row = result.fetchone()
+                return "v2-hash-chain" if row else "v1-no-chain"
+            else:
+                result = await conn.execute(text("PRAGMA table_info(audit_log)"))
+                cols = {row[1] for row in result.fetchall()}
+                return "v2-hash-chain" if "record_hash" in cols else "v1-no-chain"
+    except Exception:
+        return "v1-no-chain"
+
+
+# ---------------------------------------------------------------------------
+# G5-D — Bulk fetch for regulatory reporting
+# ---------------------------------------------------------------------------
+
+
+async def get_audit_records_by_period(
+    tenant_id: str,
+    period_start: "date",  # noqa: F821 — imported as string to avoid circular import
+    period_end: "date",
+    db_url: str,
+    max_records: int = 50_000,
+) -> List[Dict[str, Any]]:
+    """Fetch all audit log records for *tenant_id* in [period_start, period_end].
+
+    Records are ordered oldest-first.  A safety cap of *max_records* rows is
+    applied to prevent memory exhaustion on large tenants.
+
+    Parameters
+    ----------
+    tenant_id:
+        Opaque tenant identifier.  Required; raises ``ValueError`` if empty.
+    period_start / period_end:
+        Inclusive date range.  Both are required.
+    db_url:
+        SQLAlchemy async connection URL.
+    max_records:
+        Maximum number of rows to return (default: 50 000).
+
+    Returns
+    -------
+    list of dict
+        Each dict has the same shape as a single ``get_audit_record()`` return
+        value; structured fields (``input_features``, ``reason_codes``,
+        ``model_version``) are JSON-decoded when possible.
+    """
+    from datetime import date  # lazy import to avoid top-level cycle
+
+    if not tenant_id or not tenant_id.strip():
+        raise ValueError("tenant_id is required for audit log bulk reads")
+
+    start_str = period_start.isoformat() if hasattr(period_start, "isoformat") else str(period_start)
+    end_str = period_end.isoformat() if hasattr(period_end, "isoformat") else str(period_end)
+
+    # End of day for period_end: include records logged up to 23:59:59 on that date.
+    end_str_inclusive = end_str + "T23:59:59"
+
+    engine = _get_engine(db_url)
+
+    async with engine.connect() as conn:
+        try:
+            result = await conn.execute(
+                text(
+                    """
+                    SELECT *
+                    FROM audit_log
+                    WHERE tenant_id = :tenant_id
+                      AND logged_at >= :start_ts
+                      AND logged_at <= :end_ts
+                    ORDER BY logged_at ASC
+                    LIMIT :max_records
+                    """
+                ),
+                {
+                    "tenant_id": tenant_id,
+                    "start_ts": start_str,
+                    "end_ts": end_str_inclusive,
+                    "max_records": int(max_records),
+                },
+            )
+        except Exception:
+            # Table may not exist in tests / fresh environments
+            return []
+
+        rows = result.mappings().fetchall()
+
+    records: List[Dict[str, Any]] = []
+    for row in rows:
+        record: Dict[str, Any] = dict(row)
+        for field_name in ("input_features", "reason_codes", "model_version"):
+            if record.get(field_name):
+                try:
+                    record[field_name] = json.loads(record[field_name])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        records.append(record)
+
     return records

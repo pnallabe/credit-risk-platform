@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Dict, List, Literal, Optional
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.pool import StaticPool
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -301,3 +306,152 @@ class ChampionChallengerRouter:
         )
         self.store.add(rec)
         return rec
+
+    def promote_champion(
+        self,
+        new_champion_run_id: str,
+        model_doc_config: "Optional[object]" = None,
+        docs_output_dir: str = "docs/mdr",
+        audit_logger=None,
+    ) -> Dict:
+        """Promote the challenger model identified by *new_champion_run_id* to champion.
+
+        Steps
+        -----
+        1. Validate *new_champion_run_id* exists in the MLflow registry.
+           If ``mlflow`` is not available, skip validation with a warning.
+        2. Call ``generate_mdr()`` to produce an SR 11-7–compliant MDR.
+        3. Validate MDR via ``validate_mdr_completeness()`` — warn if incomplete
+           but do not block promotion.
+        4. Write MDR markdown + JSON files to *docs_output_dir*.
+        5. Update internal champion state so *new_champion_run_id* is active.
+        6. Build a promotion audit record dict.
+        7. Call ``audit_logger.log_portfolio_action()`` when provided.
+        8. Return the promotion audit record.
+
+        Parameters
+        ----------
+        new_champion_run_id:
+            MLflow run ID (or unique model identifier) of the model to promote.
+        model_doc_config:
+            Optional pre-built ``ModelDocumentationConfig``. If None, a minimal
+            config is constructed automatically.
+        docs_output_dir:
+            Directory path where MDR files are written.
+        audit_logger:
+            Optional audit logger instance with ``log_portfolio_action()`` or
+            ``log_decision()`` method.
+
+        Returns
+        -------
+        dict
+            Promotion audit record.
+        """
+        # ── 1. Validate against MLflow (best-effort) ──────────────────────
+        try:
+            import mlflow  # noqa: PLC0415
+            client = mlflow.tracking.MlflowClient()
+            _run = client.get_run(new_champion_run_id)
+            logger.info("MLflow run validated: %s", new_champion_run_id)
+        except ImportError:
+            logger.warning("mlflow not installed — skipping run_id validation for %s", new_champion_run_id)
+        except Exception as exc:
+            logger.warning("MLflow validation failed for %s (non-blocking): %s", new_champion_run_id, exc)
+
+        # ── 2. Build config if not provided ────────────────────────────────
+        from compliance.generate_model_doc import (  # noqa: PLC0415
+            ModelDocumentationConfig,
+            generate_mdr,
+            validate_mdr_completeness,
+            MDRValidationError,
+            mdr_to_markdown,
+            mdr_to_json,
+        )
+
+        if model_doc_config is None:
+            model_doc_config = ModelDocumentationConfig(
+                model_name="cc_pd_model",
+                version=new_champion_run_id[:8],
+                use_case="Credit Card Probability of Default",
+                owner="Risk Analytics",
+                reviewer="Model Risk Management",
+                approver="Chief Risk Officer",
+                intended_population="US credit card applicants",
+            )
+
+        # ── 3. Generate MDR ────────────────────────────────────────────────
+        mdr = None
+        completeness_ok = False
+        mdr_write_error: Optional[str] = None
+
+        try:
+            mdr = generate_mdr(config=model_doc_config, run_id=new_champion_run_id)
+            try:
+                validate_mdr_completeness(mdr)
+                completeness_ok = True
+            except MDRValidationError as ve:
+                logger.warning("MDR completeness check failed (non-blocking): %s", ve)
+        except Exception as exc:
+            logger.error("generate_mdr() failed: %s", exc)
+            mdr_write_error = str(exc)
+
+        # ── 4. Write MDR files ─────────────────────────────────────────────
+        md_path: Optional[Path] = None
+        json_path: Optional[Path] = None
+
+        if mdr is not None:
+            try:
+                out_dir = Path(docs_output_dir)
+                out_dir.mkdir(parents=True, exist_ok=True)
+                slug = new_champion_run_id[:8]
+                md_path   = out_dir / f"mdr_{slug}.md"
+                json_path = out_dir / f"mdr_{slug}.json"
+                md_path.write_text(mdr_to_markdown(mdr),  encoding="utf-8")
+                json_path.write_text(mdr_to_json(mdr),    encoding="utf-8")
+                logger.info("MDR written: %s, %s", md_path, json_path)
+            except Exception as exc:
+                logger.error("MDR write failed: %s", exc)
+                mdr_write_error = str(exc)
+                md_path = None
+                json_path = None
+
+        # ── 5. Update champion state ───────────────────────────────────────
+        try:
+            new_model_config = ModelConfig(
+                role="CHAMPION",
+                model_registry_name=self.champion.model_registry_name,
+                model_version=new_champion_run_id,
+                traffic_pct=self.champion.traffic_pct,
+                active=True,
+            )
+            object.__setattr__(self, "champion", new_model_config)
+        except Exception as exc:
+            logger.warning("Could not update champion state in-memory: %s", exc)
+
+        # ── 6. Build promotion audit record ───────────────────────────────
+        promotion_record: Dict = {
+            "event": "CHAMPION_PROMOTED",
+            "promoted_run_id": new_champion_run_id,
+            "mdr_md_path": str(md_path) if md_path else None,
+            "mdr_json_path": str(json_path) if json_path else None,
+            "mdr_completeness_passed": completeness_ok,
+            "promoted_at": datetime.utcnow().isoformat() + "Z",
+        }
+        if mdr_write_error:
+            promotion_record["mdr_write_error"] = mdr_write_error
+
+        # ── 7. Audit log ───────────────────────────────────────────────────
+        if audit_logger is not None:
+            try:
+                if hasattr(audit_logger, "log_portfolio_action"):
+                    audit_logger.log_portfolio_action(promotion_record)
+                elif hasattr(audit_logger, "log_decision"):
+                    audit_logger.log_decision(promotion_record)
+                else:
+                    logger.warning(
+                        "audit_logger has no recognised log method; record not persisted"
+                    )
+            except Exception as exc:
+                logger.warning("audit_logger call failed: %s", exc)
+
+        return promotion_record

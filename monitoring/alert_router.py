@@ -149,6 +149,25 @@ class AlertRouter:
 
         return alert
 
+    def send_alert(self, severity: str, title: str, body: str) -> AlertRecord:
+        """Synchronous convenience wrapper around :meth:`route`.
+
+        Parameters
+        ----------
+        severity:
+            One of ``"CRITICAL"``, ``"HIGH"``, ``"MEDIUM"``, ``"LOW"``.
+        title:
+            Short alert title (used as email subject / Slack header).
+        body:
+            Full alert body text.
+
+        Returns
+        -------
+        AlertRecord
+            Record of which channels the alert was dispatched to.
+        """
+        return self.route(severity=severity, subject=title, body=body)
+
 
 def build_channels_from_env() -> Dict[str, List[NotificationChannel]]:
     webhook = os.getenv("ALERT_SLACK_WEBHOOK_URL")
@@ -199,3 +218,62 @@ def build_channels_from_env() -> Dict[str, List[NotificationChannel]]:
 
 
 DEFAULT_ALERT_ROUTER = AlertRouter(channels=build_channels_from_env())
+
+
+async def check_adverse_action_deadlines(
+    db_url: str,
+    tenant_id: str,
+    router: "AlertRouter",
+    warn_days_before: int = 5,
+) -> int:
+    """Query adverse_action_log for PENDING notices approaching their 30-day deadline.
+
+    Fires a CRITICAL alert via *router* for each notice found.
+
+    Parameters
+    ----------
+    db_url:
+        SQLAlchemy async DB URL.
+    tenant_id:
+        Tenant to check.
+    router:
+        :class:`AlertRouter` instance used to dispatch alerts.
+    warn_days_before:
+        Alert window in days before the deadline.
+
+    Returns
+    -------
+    int
+        Count of notices alerted.
+    """
+    try:
+        from compliance.adverse_action_store import get_pending_deadline_notices  # lazy
+    except ImportError as exc:
+        log.warning("check_adverse_action_deadlines: import failed: %s", exc)
+        return 0
+
+    try:
+        notices = await get_pending_deadline_notices(db_url, tenant_id, warn_days_before)
+    except Exception as exc:
+        log.warning(
+            "check_adverse_action_deadlines: failed to query notices: %s", exc
+        )
+        return 0
+
+    count = 0
+    for notice in notices:
+        notice_id = notice.get("notice_id", "unknown")
+        application_id = notice.get("application_id", "unknown")
+        deadline_date = notice.get("deadline_date", "unknown")
+
+        router.send_alert(
+            severity="CRITICAL",
+            title="Adverse Action Deadline Approaching",
+            body=(
+                f"Notice {notice_id} for application {application_id} "
+                f"must be delivered by {deadline_date}. Status: PENDING."
+            ),
+        )
+        count += 1
+
+    return count

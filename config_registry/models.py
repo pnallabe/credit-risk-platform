@@ -153,6 +153,8 @@ class TenantConfigVersion:
             "is_rollback": self.is_rollback,
             "rollback_source_version": self.rollback_source_version,
             "created_at": self.created_at.isoformat(),
+            # G11-A: staging status field (may be absent on older rows)
+            "status": getattr(self, "status", "active"),
         }
 
     def get_policy_cutoffs(self) -> Dict[str, Any]:

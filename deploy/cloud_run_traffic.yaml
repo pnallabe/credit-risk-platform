@@ -1,0 +1,35 @@
+# Cloud Run Traffic Split Manifest — Decision API
+#
+# Usage (manual apply):
+#   envsubst < deploy/cloud_run_traffic.yaml | gcloud run services replace - --region=<REGION>
+#
+# Or, to use the automated canary controller instead, run:
+#   python scripts/canary_decision_api.py --help
+#
+# Required substitutions before applying:
+#   {{STABLE_REVISION}}  - current stable Cloud Run revision name
+#   {{CANARY_REVISION}}  - new revision being promoted
+#   {{STABLE_PCT}}       - integer 0-100 (percentge sent to stable)
+#   {{CANARY_PCT}}       - integer 0-100 (STABLE_PCT + CANARY_PCT must equal 100)
+#   {{SERVICE_NAME}}     - Cloud Run service name (default: decision-api)
+#   {{GCP_REGION}}       - GCP region (e.g. us-central1)
+#
+# Example — 10% canary split:
+#   STABLE_PCT=90 CANARY_PCT=10
+#   STABLE_REVISION=decision-api-00041-abc
+#   CANARY_REVISION=decision-api-00042-xyz
+
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: "{{SERVICE_NAME}}"
+  annotations:
+    run.googleapis.com/ingress: all
+    run.googleapis.com/launch-stage: BETA
+spec:
+  traffic:
+    - revisionName: "{{STABLE_REVISION}}"
+      percent: "{{STABLE_PCT}}"
+    - revisionName: "{{CANARY_REVISION}}"
+      percent: "{{CANARY_PCT}}"
+      tag: canary
