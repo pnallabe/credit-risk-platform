@@ -160,6 +160,17 @@ test-ingestion: ## Run ingestion API tests
 	$(PYTEST) ingestion-api/tests/ -v --tb=short
 
 # ---------------------------------------------------------------------------
+# P2 Safety gates (PROMPT-06)
+# ---------------------------------------------------------------------------
+.PHONY: check-no-eval
+check-no-eval: ## Check no eval() in production policy/agent/engine code paths
+	@bash scripts/check_no_eval.sh
+
+.PHONY: contract-tests
+contract-tests: ## Run cross-service OpenAPI contract tests
+	$(PYTEST) tests/integration/test_api_contracts.py -v --tb=short -m integration
+
+# ---------------------------------------------------------------------------
 # Services  (local, without Docker)
 # ---------------------------------------------------------------------------
 .PHONY: api-ingestion

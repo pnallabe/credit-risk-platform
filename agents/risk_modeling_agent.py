@@ -90,7 +90,7 @@ class RiskModelingAgent(BaseAgent):
 
     name = "RiskModelingAgent"
 
-    def __init__(self, config: Dict[str, Any] | None = None):
+    def __init__(self, config: Dict[str, Any] | None = None, tenant_model_bindings: Optional[Dict[str, str]] = None):
         super().__init__(config)
         cr_cfg = self.config.get("credit_risk", {})
         fd_cfg = self.config.get("fraud_detection", {})
@@ -122,6 +122,12 @@ class RiskModelingAgent(BaseAgent):
         self._mort_challenger_path: Optional[str] = mort_cfg.get("challenger_model")
         self._mort_challenger_pct: float          = float(mort_cfg.get("challenger_traffic_pct", 0.0))
 
+        # P2: Apply per-tenant model artefact URI overrides if provided.
+        # Overrides must be applied BEFORE _preload_agent_models() so that
+        # the pre-load cache populates the tenant-specific artefacts.
+        if tenant_model_bindings:
+            self._apply_tenant_model_bindings(tenant_model_bindings)
+
         # P1.4: Eagerly preload all configured model artefacts at agent init so
         # that the per-request hot path is a pure cache hit (no disk I/O).
         if _MODELS_AVAILABLE:
@@ -130,6 +136,55 @@ class RiskModelingAgent(BaseAgent):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+
+    def _apply_tenant_model_bindings(self, bindings: Dict[str, str]) -> None:
+        """Override model artefact paths from per-tenant config bindings.
+
+        Called before _preload_agent_models() so the cache is populated
+        with the tenant-specific artefact URIs.
+
+        Supported binding keys → instance attribute mapping:
+          pd_champion     → _champion_pd_path
+          pd_challenger   → _challenger_pd_path
+          fraud_champion  → _fraud_model_path
+          cc_val_champion → _val_champion_path
+          cc_val_challenger → _val_challenger_path
+          cc_port_champion  → _port_champion_path
+          cc_port_challenger → _port_challenger_path
+          mort_champion   → _mort_champion_path
+          mort_challenger → _mort_challenger_path
+        """
+        _binding_map: Dict[str, str] = {
+            "pd_champion":       "_champion_pd_path",
+            "pd_challenger":     "_challenger_pd_path",
+            "fraud_champion":    "_fraud_model_path",
+            "cc_val_champion":   "_val_champion_path",
+            "cc_val_challenger": "_val_challenger_path",
+            "cc_port_champion":  "_port_champion_path",
+            "cc_port_challenger":"_port_challenger_path",
+            "mort_champion":     "_mort_champion_path",
+            "mort_challenger":   "_mort_challenger_path",
+        }
+        applied: List[str] = []
+        for binding_key, attr in _binding_map.items():
+            if binding_key in bindings:
+                uri = bindings[binding_key]
+                # Validate: local paths must exist at construction time
+                if uri and not (
+                    uri.startswith("models:/")
+                    or uri.startswith("gs://")
+                    or uri.startswith("s3://")
+                ):
+                    import os as _os
+                    if not _os.path.exists(uri):
+                        raise FileNotFoundError(
+                            f"Tenant model binding '{binding_key}' points to a missing artefact: {uri!r}. "
+                            "Fix the binding in config_registry or ensure the artefact is deployed."
+                        )
+                setattr(self, attr, uri)
+                applied.append(f"{binding_key}={uri!r}")
+        if applied:
+            logger.info("RiskModelingAgent: applied tenant model bindings: %s", ", ".join(applied))
 
     def _preload_agent_models(self) -> None:
         """Pre-load all configured model artefacts into the process-level cache.

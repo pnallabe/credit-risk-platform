@@ -45,3 +45,15 @@ reportlab>=4.0.0
 
 # P2 — PDF testing (byte-level validation); move to requirements-dev.txt if desired
 pypdf>=3.0.0
+
+# P2 — OpenTelemetry distributed tracing (PROMPT-05)
+opentelemetry-sdk>=1.24.0
+opentelemetry-api>=1.24.0
+opentelemetry-exporter-otlp-proto-http>=1.24.0
+opentelemetry-instrumentation-fastapi>=0.45b0
+
+# P2 — OpenAPI contract tests (PROMPT-06)
+jsonschema>=4.21.0
+
+# P3 — Prometheus metrics sink (PROMPT-09)
+prometheus-client>=0.20.0

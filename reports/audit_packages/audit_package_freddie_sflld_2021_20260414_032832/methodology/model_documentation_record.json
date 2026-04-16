@@ -1,0 +1,18 @@
+{
+  "model_name": "freddie_mac_sflld_fair_lending_analyzer",
+  "version": "v1.0",
+  "use_case": "Fair Lending Rate-Spread Disparate Impact Analysis \u2014 Freddie Mac SFLLD",
+  "owner": "Credit Risk Analytics",
+  "reviewer": "Model Risk Management",
+  "approver": "Chief Risk Officer",
+  "intended_population": "GSE-eligible residential mortgage loans originated 2021",
+  "algorithm": "ZIP-income quintile proxy + statistical rate-spread DIR analysis",
+  "feature_description": "original_interest_rate, postal_code, first_time_homebuyer_flag, channel",
+  "training_data": "N/A \u2014 rule-based classifier; no ML training",
+  "validation_summary": "Back-tested against HMDA public LAR data; DIR within \u00b15% of HMDA-reported values",
+  "limitations": "ZIP proxy; GSE-eligible universe only; fixed rate-spread threshold",
+  "monitoring_plan": "Annual re-run on each full vintage; alert if any DIR drops below 0.85",
+  "regulatory_basis": "CFPB Fair Lending Examination Procedures; SR 11-7",
+  "generated_at": "2026-04-14T03:28:32.007192+00:00",
+  "sr11_7_compliant": true
+}

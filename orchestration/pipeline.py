@@ -184,12 +184,45 @@ class CreditRiskPipeline:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_config(cls, config_path: str = _CONFIG_PATH) -> "CreditRiskPipeline":
-        """Instantiate the full pipeline from agent_config.yaml."""
+    def from_config(cls, config_path: str = _CONFIG_PATH, tenant_id: Optional[str] = None) -> "CreditRiskPipeline":
+        """Instantiate the full pipeline from agent_config.yaml.
+
+        Parameters
+        ----------
+        config_path:
+            Path to the agent YAML config file.
+        tenant_id:
+            Optional. When provided, per-tenant model artefact URI overrides
+            are resolved from the config registry and passed to
+            ``RiskModelingAgent`` before it preloads its models.  If the
+            tenant has no active config, or if no ``model_bindings`` key is
+            present, env-var defaults are used unchanged.
+        """
         cfg: Dict[str, Any] = {}
         if os.path.exists(config_path):
             with open(config_path) as f:
                 cfg = yaml.safe_load(f) or {}
+
+        # P2 — Resolve per-tenant model bindings from config registry
+        tenant_model_bindings: Dict[str, str] = {}
+        if tenant_id:
+            try:
+                active_cfg = _CONFIG_REGISTRY.get_active(tenant_id)
+                if active_cfg is not None:
+                    tenant_model_bindings = active_cfg.get_model_bindings()
+                    if tenant_model_bindings:
+                        logger.info(
+                            "Pipeline.from_config: applying %d model binding(s) for tenant=%s",
+                            len(tenant_model_bindings),
+                            tenant_id,
+                        )
+            except Exception as _cfg_exc:  # noqa: BLE001
+                logger.warning(
+                    "Pipeline.from_config: could not resolve model bindings for tenant=%s (%s) "
+                    "— using env-var defaults",
+                    tenant_id,
+                    _cfg_exc,
+                )
 
         bq_cfg = cfg.get("bigquery", {})
         bq_writer: Optional[BQWriterAgent] = None
@@ -199,7 +232,10 @@ class CreditRiskPipeline:
         pipeline = cls(
             ingestion_agent=DataIngestionAgent(config=cfg.get("data_ingestion", {})),
             feature_agent=FeatureEngineeringAgent(config=cfg.get("feature_engineering", {})),
-            modeling_agent=RiskModelingAgent(config=cfg.get("risk_modeling", {})),
+            modeling_agent=RiskModelingAgent(
+                config=cfg.get("risk_modeling", {}),
+                tenant_model_bindings=tenant_model_bindings or None,
+            ),
             decision_agent=DecisionEngineAgent(config=cfg.get("decision_engine", {})),
             explain_agent=ExplainabilityAgent(config=cfg.get("explainability", {})),
             monitoring_agent=MonitoringAgent(config=cfg.get("monitoring", {})),

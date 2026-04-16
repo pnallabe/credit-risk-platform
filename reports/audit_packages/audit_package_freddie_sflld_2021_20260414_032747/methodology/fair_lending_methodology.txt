@@ -1,0 +1,60 @@
+FAIR LENDING METHODOLOGY — FREDDIE MAC SFLLD {year}
+=====================================================
+
+1. DATA SOURCE
+   BigQuery dataset : ai-risk-workflow.freddie_mac_sflld.freddie_origination
+   Filtered period  : first_payment_date BETWEEN {year}01 AND {year}12
+   Total loans      : See executive summary
+
+2. PROTECTED CHARACTERISTIC PROXY
+   Freddie Mac SFLLD does not include direct demographic (race/ethnicity)
+   fields. Per CFPB Supervisory Guidance on UDAP/UDAAP and HMDA Reg. C
+   commentary, ZIP-code income quintile is used as an approved geographic
+   proxy for low-to-moderate income (LMI) fair lending analysis.
+
+   Quintile derivation:
+     ZIP3 prefix → 2021 national ACS 5-year median household income decile
+     Q1_LOW_INCOME   = ZIP3 200–299, 700–749
+     Q2_LOWER_MID    = ZIP3 100–199, 300–349
+     Q3_MIDDLE       = ZIP3 350–499, 750–799
+     Q4_UPPER_MID    = ZIP3 500–599, 800–849
+     Q5_HIGH_INCOME  = ZIP3 000–099, 600–699, 850–999
+
+3. ADVERSE OUTCOME DEFINITION (RATE-SPREAD ANALYSIS)
+   Consistent with HMDA Section 304 rate-spread reporting:
+     HIGH_COST (adverse) = original_interest_rate > (portfolio median + 150 bps)
+     STANDARD_RATE       = original_interest_rate ≤ (portfolio median + 150 bps)
+
+   The 150 bps threshold aligns with HMDA's reported rate-spread trigger
+   for first-lien mortgages relative to APOR.
+
+4. FAIR LENDING METRICS COMPUTED
+   a) Disparate Impact Ratio (DIR)
+      DIR = P(standard rate | protected group) / P(standard rate | control group)
+      Threshold: DIR < 0.80 triggers the 4/5ths rule flag (EEOC / CFPB guidance).
+
+   b) Approval Parity (Chi-squared independence test)
+      H₀: rate classification is independent of income group.
+      Flag if p-value < 0.05 (α = 0.05).
+      NOTE: With n > 100,000, chi-sq detects economically trivial differences.
+      Effect size (DIR) is the primary regulatory metric.
+
+   c) Geographic Bias
+      Flag states / territories with standard-rate rate > 1.5σ below national mean.
+
+5. ADDITIONAL TESTS PERFORMED
+   - First-Time Homebuyer (FTHB) disparity: Y vs N
+   - Origination channel disparity: Broker (B) vs Retail (R)
+
+6. LIMITATIONS
+   - ZIP-income quintile is an indirect proxy without individual demographics.
+   - SFLLD contains only GSE-eligible (conforming) loans; subprime and jumbo
+     loans are excluded by design, limiting generalizability.
+   - Rate-spread threshold is fixed; time-varying APOR spreads not applied.
+
+7. REGULATORY REFERENCES
+   - ECOA 15 U.S.C. § 1691(a); Regulation B, 12 CFR Part 1002
+   - HMDA 12 U.S.C. § 2801; Regulation C, 12 CFR Part 1003
+   - CFPB Supervisory Guidance: Fair Lending Examination Procedures (2022)
+   - FFIEC Interagency Fair Lending Examination Procedures
+   - OCC Comptroller's Handbook: Fair Lending (2022 edition)

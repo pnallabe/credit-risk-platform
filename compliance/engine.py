@@ -40,7 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Dict, Literal, Optional
 
 from compliance.data_plane import (
     ComplianceDataPlaneError,
@@ -54,6 +54,16 @@ DecisionOverride = Literal["NONE", "MANUAL_REVIEW", "DECLINE"]
 
 
 @dataclass
+class ComplianceFlag:
+    """A structured compliance flag attached to a gate result."""
+
+    rule_code: str      # e.g. "PV001" (prohibited variable)
+    severity: str       # "BLOCK" | "WARN"
+    message: str        # human-readable description
+    field: str = ""     # the offending field name, if applicable
+
+
+@dataclass
 class ComplianceGateResult:
     """Result of a single ComplianceEngine.gate() call."""
 
@@ -63,6 +73,7 @@ class ComplianceGateResult:
     warn_checks: list[str] = field(default_factory=list)
     compliance_block: bool = False
     compliance_event_ids: list[str] = field(default_factory=list)
+    flags: list = field(default_factory=list)  # List[ComplianceFlag]
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +125,8 @@ class ComplianceEngine:
         applicant_id_hash: str,
         decision_id: str,
         policy_version_id: str,
+        # GAP-08: optional feature dict for prohibited-variable screening
+        input_features: Optional[Dict] = None,
     ) -> ComplianceGateResult:
         """
         Run all compliance checks for a single credit decision.
@@ -146,6 +159,28 @@ class ComplianceEngine:
             ``passed=False`` — at least one check BLOCKED; override to MANUAL_REVIEW.
         """
         result = ComplianceGateResult(passed=True, override="NONE")
+
+        # §6.2 — Prohibited variables gate (GAP-08)
+        # This runs FIRST, before any other compliance check.
+        try:
+            from compliance.prohibited_variables import (
+                check_for_prohibited_variables,
+                ProhibitedVariableViolation,
+            )
+            check_for_prohibited_variables(input_features or {})
+        except Exception as pv:
+            from compliance.prohibited_variables import ProhibitedVariableViolation as _PVV
+            if isinstance(pv, _PVV):
+                result.passed = False
+                result.flags.append(ComplianceFlag(
+                    rule_code="PV001",
+                    severity="BLOCK",
+                    message=str(pv),
+                    field=pv.variable,
+                ))
+                result.blocking_checks.append(f"PV001: {pv.variable}")
+                result.override = "DECLINE"
+                return result
 
         common = dict(
             source_system=source_system,

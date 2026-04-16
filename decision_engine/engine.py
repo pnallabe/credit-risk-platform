@@ -34,7 +34,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Make project root importable when run as a script
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -165,6 +165,8 @@ class DecisionResult:
     reason_codes: List[str]
     decision_timestamp: datetime
     decision_latency_ms: int
+    # GAP-02: override records collected during this decision (empty when no overrides applied)
+    override_records: List[Any] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +257,12 @@ def make_decision(
     request: DecisionRequest,
     *,
     policy_overrides: Optional[Dict[str, Any]] = None,
+    # GAP-02: override audit fields — required whenever policy_overrides is non-empty
+    override_submitted_by: Optional[str] = None,
+    override_approved_by: Optional[str] = None,
+    override_justification: Optional[str] = None,
+    # GAP-11: set True in simulation/replay contexts — bypasses four-eyes GAP-02 check
+    _simulation: bool = False,
 ) -> DecisionResult:
     """Apply the decision policy and return a ``DecisionResult``.
 
@@ -280,6 +288,11 @@ def make_decision(
 
         Unknown keys are silently ignored so future cutoff additions are
         backwards-compatible.
+    _simulation:
+        Internal flag for simulation / replay contexts (GAP-11).
+        When True, GAP-02 four-eyes validation is skipped;
+        no override audit records are generated.
+        Must **not** be set True in live production decision paths.
 
     Returns
     -------
@@ -290,6 +303,59 @@ def make_decision(
 
     # P2.1 — Apply per-tenant policy cutoffs when provided
     overrides = policy_overrides or {}
+
+    # GAP-02 — Require four-eyes approval metadata whenever overrides are applied
+    # (skipped in simulation context via _simulation=True)
+    _override_records: List[Any] = []
+    if overrides and not _simulation:
+        if (
+            override_submitted_by is None
+            or override_approved_by is None
+            or override_justification is None
+            or len(override_justification) < 10
+        ):
+            raise ValueError(
+                "policy_overrides require override_submitted_by, override_approved_by, "
+                "and override_justification (min 10 chars)"
+            )
+        # Four-eyes: submitter != approver
+        from compliance.rbac import validate_override_submission
+        validate_override_submission(
+            submitted_by=override_submitted_by,
+            approved_by=override_approved_by,
+            justification=override_justification,
+        )
+        # Build a PolicyOverrideRecord stub for each key so the caller can
+        # persist them via audit.override_log.log_override().
+        try:
+            from audit.override_log import PolicyOverrideRecord
+            _approved_at = datetime.now(tz=timezone.utc).isoformat()
+            for _k, _v in overrides.items():
+                # Determine original value from engine constants
+                _original: float
+                if _k == "pd_threshold_low":
+                    _original = PD_THRESHOLD_LOW
+                elif _k == "pd_threshold":
+                    _original = PD_THRESHOLD_MEDIUM
+                elif _k == "dti_high":
+                    _original = DTI_HIGH_THRESHOLD
+                else:
+                    _original = 0.0
+                import uuid as _uuid
+                _override_records.append(PolicyOverrideRecord(
+                    override_id=str(_uuid.uuid4()),
+                    decision_id=request.application_id,
+                    tenant_id="",  # filled in by the API layer which knows the tenant
+                    override_type=_k,
+                    original_value=_original,
+                    override_value=float(_v),
+                    justification=override_justification,
+                    submitted_by=override_submitted_by,
+                    approved_by=override_approved_by,
+                    approved_at=_approved_at,
+                ))
+        except ImportError:
+            pass  # audit module unavailable in minimal test setups
     _pd_low    = float(overrides.get("pd_threshold_low", PD_THRESHOLD_LOW))
     _pd_medium = float(overrides.get("pd_threshold",     PD_THRESHOLD_MEDIUM))
 
@@ -360,6 +426,7 @@ def make_decision(
         reason_codes=reason_codes,
         decision_timestamp=decision_timestamp,
         decision_latency_ms=elapsed_ms,
+        override_records=_override_records,
     )
 
 

@@ -290,6 +290,29 @@ EXPERIMENT_RESULTS_CLUSTER   = ["recommendation", "status"]
 # Master table catalogue
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# P3-ETL — Bronze rejected side-tables (PROMPT-07)
+#
+# One "_rejected" schema per bronze fact table.  Same columns as the parent
+# table plus ``rejection_reason`` (the silver-layer validation error message).
+# Partition / cluster on ``inserted_at`` / ``tenant_id`` for cheap
+# time-windowed rejection audits.
+# ---------------------------------------------------------------------------
+
+def _add_rejection_reason(schema: List[Any]) -> List[Any]:
+    """Return *schema* with an appended ``rejection_reason`` NULLABLE STRING column."""
+    return list(schema) + [
+        _f("rejection_reason", "STRING", "NULLABLE", "Silver-layer validation rejection reason"),
+    ]
+
+
+LOAN_APPLICATIONS_BRONZE_REJECTED_SCHEMA: List[Any] = _add_rejection_reason(LOAN_APPLICATIONS_SCHEMA)
+FEATURE_VECTORS_BRONZE_REJECTED_SCHEMA: List[Any]    = _add_rejection_reason(FEATURE_VECTORS_SCHEMA)
+MODEL_SCORES_BRONZE_REJECTED_SCHEMA: List[Any]        = _add_rejection_reason(MODEL_SCORES_SCHEMA)
+CREDIT_DECISIONS_BRONZE_REJECTED_SCHEMA: List[Any]    = _add_rejection_reason(CREDIT_DECISIONS_SCHEMA)
+EXPLANATIONS_BRONZE_REJECTED_SCHEMA: List[Any]        = _add_rejection_reason(EXPLANATIONS_SCHEMA)
+
+
 TABLE_CATALOGUE: Dict[str, Dict] = {
     "loan_applications": {
         "schema": LOAN_APPLICATIONS_SCHEMA,
@@ -344,5 +367,38 @@ TABLE_CATALOGUE: Dict[str, Dict] = {
         "partition_field": EXPERIMENT_RESULTS_PARTITION,
         "clustering_fields": EXPERIMENT_RESULTS_CLUSTER,
         "description": "Champion/challenger A/B experiment outcomes",
+    },
+    # -----------------------------------------------------------------------
+    # P3-ETL rejected side-tables (PROMPT-07)
+    # -----------------------------------------------------------------------
+    "loan_applications_bronze_rejected": {
+        "schema": LOAN_APPLICATIONS_BRONZE_REJECTED_SCHEMA,
+        "partition_field": "inserted_at",
+        "clustering_fields": ["tenant_id"],
+        "description": "Bronze rows that failed silver-layer validation",
+    },
+    "feature_vectors_bronze_rejected": {
+        "schema": FEATURE_VECTORS_BRONZE_REJECTED_SCHEMA,
+        "partition_field": "computed_at",
+        "clustering_fields": ["tenant_id"],
+        "description": "Feature vector rows that failed silver-layer validation",
+    },
+    "model_scores_bronze_rejected": {
+        "schema": MODEL_SCORES_BRONZE_REJECTED_SCHEMA,
+        "partition_field": "scored_at",
+        "clustering_fields": ["tenant_id"],
+        "description": "Model score rows that failed silver-layer validation",
+    },
+    "credit_decisions_bronze_rejected": {
+        "schema": CREDIT_DECISIONS_BRONZE_REJECTED_SCHEMA,
+        "partition_field": "decided_at",
+        "clustering_fields": ["tenant_id"],
+        "description": "Credit decision rows that failed silver-layer validation",
+    },
+    "explanations_bronze_rejected": {
+        "schema": EXPLANATIONS_BRONZE_REJECTED_SCHEMA,
+        "partition_field": "generated_at",
+        "clustering_fields": ["tenant_id"],
+        "description": "Explanation rows that failed silver-layer validation",
     },
 }

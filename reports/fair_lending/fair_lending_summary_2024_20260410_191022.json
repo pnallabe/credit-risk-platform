@@ -1,0 +1,32 @@
+{
+  "year": 2024,
+  "n_loans": 30000,
+  "tests": {
+    "dir_q1_vs_q5": {
+      "dir_score": 0.4283,
+      "dir_flag": true,
+      "parity_flag": true,
+      "geo_flags": [
+        "MD",
+        "MI"
+      ],
+      "pass": false
+    },
+    "dir_fthb": {
+      "dir_score": 1.0018,
+      "dir_flag": false,
+      "parity_flag": false,
+      "pass": true
+    },
+    "dir_broker_vs_retail": {
+      "dir_score": 0.9879,
+      "dir_flag": false,
+      "parity_flag": false,
+      "pass": true
+    }
+  },
+  "overall_pass": false,
+  "run_timestamp": "2026-04-10T19:10:22.478934+00:00",
+  "mode": "dry_run",
+  "rate_threshold_bps": 150
+}

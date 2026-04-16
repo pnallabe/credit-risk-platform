@@ -31,6 +31,14 @@ from sqlalchemy.orm import sessionmaker
 
 logger = logging.getLogger(__name__)
 
+# PROMPT-05: Import tracing — no-op if opentelemetry-sdk is not installed
+try:
+    from observability.tracing import TRACER, span as _trace_span
+except ImportError:  # pragma: no cover
+    TRACER = None  # type: ignore[assignment]
+    import contextlib as _contextlib
+    _trace_span = _contextlib.nullcontext  # type: ignore[assignment]
+
 # ---------------------------------------------------------------------------
 # PII masking utilities
 # ---------------------------------------------------------------------------
@@ -362,109 +370,111 @@ async def log_decision(
     """
     if not tenant_id or not tenant_id.strip():
         raise ValueError("tenant_id is required for audit log writes")
-    log_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc).isoformat()
 
-    # Support both dataclass and dict decision_result
-    if isinstance(decision_result, dict):
-        dr = decision_result
-        application_id = dr.get("application_id", "")
-        decision_output = dr.get("decision", "")
-        reason_codes = dr.get("reason_codes", [])
-        decision_latency_ms = dr.get("decision_latency_ms", 0)
-    else:
-        application_id = getattr(decision_result, "application_id", "")
-        decision_output = getattr(decision_result, "decision", "")
-        reason_codes = getattr(decision_result, "reason_codes", [])
-        decision_latency_ms = getattr(decision_result, "decision_latency_ms", 0)
+    with _trace_span("audit.log_decision", TRACER):
+        log_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
 
-    # Extract scores from model_versions dict (or input_features for convenience)
-    fraud_score = float(model_versions.get("fraud_score", input_features.get("fraud_probability", 0.0)))
-    risk_score = float(model_versions.get("risk_score", input_features.get("pd_score", 0.0)))
+        # Support both dataclass and dict decision_result
+        if isinstance(decision_result, dict):
+            dr = decision_result
+            application_id = dr.get("application_id", "")
+            decision_output = dr.get("decision", "")
+            reason_codes = dr.get("reason_codes", [])
+            decision_latency_ms = dr.get("decision_latency_ms", 0)
+        else:
+            application_id = getattr(decision_result, "application_id", "")
+            decision_output = getattr(decision_result, "decision", "")
+            reason_codes = getattr(decision_result, "reason_codes", [])
+            decision_latency_ms = getattr(decision_result, "decision_latency_ms", 0)
 
-    model_version_str = json.dumps(
-        {k: v for k, v in model_versions.items() if k not in ("fraud_score", "risk_score")}
-    )
+        # Extract scores from model_versions dict (or input_features for convenience)
+        fraud_score = float(model_versions.get("fraud_score", input_features.get("fraud_probability", 0.0)))
+        risk_score = float(model_versions.get("risk_score", input_features.get("pd_score", 0.0)))
 
-    masked_features = mask_pii(input_features)
-    # Section 19: also mask origination_id -> SHA-256 in CC valuation records
-    if "origination_id" in masked_features and masked_features["origination_id"]:
-        masked_features["origination_id"] = _sha256(str(masked_features["origination_id"]))
+        model_version_str = json.dumps(
+            {k: v for k, v in model_versions.items() if k not in ("fraud_score", "risk_score")}
+        )
 
-    # Extract CC valuation fields (all must be present if decision_result carries them;
-    # None is stored as NULL — NOT permitted in compliance records — callers must supply values)
-    dr_dict = decision_result if isinstance(decision_result, dict) else vars(decision_result) if hasattr(decision_result, "__dict__") else {}
+        masked_features = mask_pii(input_features)
+        # Section 19: also mask origination_id -> SHA-256 in CC valuation records
+        if "origination_id" in masked_features and masked_features["origination_id"]:
+            masked_features["origination_id"] = _sha256(str(masked_features["origination_id"]))
 
-    params: Dict[str, Any] = {
-        "log_id": log_id,
-        "tenant_id": tenant_id,
-        "application_id": str(application_id),
-        "logged_at": now,
-        "input_features": json.dumps(masked_features),
-        "model_version": model_version_str,
-        "feature_version": feature_version,
-        "fraud_score": fraud_score,
-        "risk_score": risk_score,
-        "decision_output": str(decision_output),
-        "reason_codes": json.dumps(reason_codes),
-        "decision_latency_ms": int(decision_latency_ms),
-        # CC valuation fields (Section 19) — None if not a valuation decision
-        "scenario_weighted_cnpv":   dr_dict.get("scenario_weighted_cnpv"),
-        "cnpv_base":                dr_dict.get("cnpv_base"),
-        "cnpv_worsening":           dr_dict.get("cnpv_worsening"),
-        "cnpv_recession":           dr_dict.get("cnpv_recession"),
-        "ftp_rate_bps":             dr_dict.get("ftp_rate_bps"),
-        "rwa_usd":                  dr_dict.get("rwa_usd"),
-        "capital_available_usd":    dr_dict.get("capital_available_usd"),
-        "acquisition_signal":       dr_dict.get("acquisition_signal"),
-        "recommended_apr":          dr_dict.get("recommended_apr"),
-        "recommended_credit_limit": dr_dict.get("recommended_credit_limit"),
-        "scenario_name":            dr_dict.get("scenario_name"),
-        "model_version_valuation":  dr_dict.get("model_version_valuation"),
-        "policy_version":           dr_dict.get("policy_version"),
-    }
+        # Extract CC valuation fields (all must be present if decision_result carries them;
+        # None is stored as NULL — NOT permitted in compliance records — callers must supply values)
+        dr_dict = decision_result if isinstance(decision_result, dict) else vars(decision_result) if hasattr(decision_result, "__dict__") else {}
 
-    # Build canonical payload for hash chain (keys sorted alphabetically)
-    canonical_payload = json.dumps(
-        {
-            "decision_output": params["decision_output"],
-            "fraud_score": params["fraud_score"],
-            "reason_codes": params["reason_codes"],
-            "risk_score": params["risk_score"],
-        },
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+        params: Dict[str, Any] = {
+            "log_id": log_id,
+            "tenant_id": tenant_id,
+            "application_id": str(application_id),
+            "logged_at": now,
+            "input_features": json.dumps(masked_features),
+            "model_version": model_version_str,
+            "feature_version": feature_version,
+            "fraud_score": fraud_score,
+            "risk_score": risk_score,
+            "decision_output": str(decision_output),
+            "reason_codes": json.dumps(reason_codes),
+            "decision_latency_ms": int(decision_latency_ms),
+            # CC valuation fields (Section 19) — None if not a valuation decision
+            "scenario_weighted_cnpv":   dr_dict.get("scenario_weighted_cnpv"),
+            "cnpv_base":                dr_dict.get("cnpv_base"),
+            "cnpv_worsening":           dr_dict.get("cnpv_worsening"),
+            "cnpv_recession":           dr_dict.get("cnpv_recession"),
+            "ftp_rate_bps":             dr_dict.get("ftp_rate_bps"),
+            "rwa_usd":                  dr_dict.get("rwa_usd"),
+            "capital_available_usd":    dr_dict.get("capital_available_usd"),
+            "acquisition_signal":       dr_dict.get("acquisition_signal"),
+            "recommended_apr":          dr_dict.get("recommended_apr"),
+            "recommended_credit_limit": dr_dict.get("recommended_credit_limit"),
+            "scenario_name":            dr_dict.get("scenario_name"),
+            "model_version_valuation":  dr_dict.get("model_version_valuation"),
+            "policy_version":           dr_dict.get("policy_version"),
+        }
 
-    engine = _get_engine(db_url)
+        # Build canonical payload for hash chain (keys sorted alphabetically)
+        canonical_payload = json.dumps(
+            {
+                "decision_output": params["decision_output"],
+                "fraud_score": params["fraud_score"],
+                "reason_codes": params["reason_codes"],
+                "risk_score": params["risk_score"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
 
-    async with engine.begin() as conn:
-        await conn.execute(text(_CREATE_AUDIT_TABLE))
-        try:
-            record_hash, previous_hash = await compute_chain_hash(
-                conn, log_id, now, canonical_payload, tenant_id, table="audit_log"
-            )
-            hash_params = {
-                **params,
-                "record_hash": record_hash,
-                "previous_hash": previous_hash,
-                "hash_algorithm": "sha256",
-            }
-            await conn.execute(text(_INSERT_AUDIT_WITH_HASH), hash_params)
-        except Exception as _hash_exc:
-            logger.debug(
-                "Hash chain write skipped (pre-migration schema): %s", _hash_exc
-            )
-            await conn.execute(text(_INSERT_AUDIT), params)
+        engine = _get_engine(db_url)
 
-    logger.info(
-        "Audit log written: log_id=%s tenant_id=%s application_id=%s decision=%s",
-        log_id,
-        tenant_id,
-        application_id,
-        decision_output,
-    )
-    return log_id
+        async with engine.begin() as conn:
+            await conn.execute(text(_CREATE_AUDIT_TABLE))
+            try:
+                record_hash, previous_hash = await compute_chain_hash(
+                    conn, log_id, now, canonical_payload, tenant_id, table="audit_log"
+                )
+                hash_params = {
+                    **params,
+                    "record_hash": record_hash,
+                    "previous_hash": previous_hash,
+                    "hash_algorithm": "sha256",
+                }
+                await conn.execute(text(_INSERT_AUDIT_WITH_HASH), hash_params)
+            except Exception as _hash_exc:
+                logger.debug(
+                    "Hash chain write skipped (pre-migration schema): %s", _hash_exc
+                )
+                await conn.execute(text(_INSERT_AUDIT), params)
+
+        logger.info(
+            "Audit log written: log_id=%s tenant_id=%s application_id=%s decision=%s",
+            log_id,
+            tenant_id,
+            application_id,
+            decision_output,
+        )
+        return log_id
 
 
 async def get_audit_record(
@@ -859,24 +869,42 @@ async def log_model_validation(
     approved_for_prod: bool,
     notes: str,
     db_url: str,
+    submitted_by: Optional[str] = None,
 ) -> str:
     """Write a model validation log entry.
 
     Parameters
     ----------
-    validator_email:    Must differ from model developer email (independence enforced at
-                        application layer — caller is responsible for this check).
+    validator_email:    Independent validator email.  Must differ from
+                        *submitted_by* (SR 11-7 four-eyes requirement).
     validation_type:    INITIAL | ANNUAL | TRIGGERED
     outcome:            PASS | PASS_WITH_CONDITIONS | FAIL
     conditions:         List of required remediation items (for PASS_WITH_CONDITIONS).
     findings:           Detailed findings dict.
     test_scripts_ref:   Git SHA of the validation test scripts.
     approved_for_prod:  Whether the validator approved for production promotion.
+    submitted_by:       Email of the developer/submitter who built the model.
+                        When provided, the function enforces SR 11-7 independence:
+                        validator_email must differ from submitted_by.
 
     Returns
     -------
     str — UUID ``validation_id``.
+
+    Raises
+    ------
+    SeparationOfDutiesViolation
+        If *submitted_by* equals *validator_email* (same person cannot both
+        build and independently validate a model).
     """
+    # SR 11-7: Independent Model Validation — enforce separation of duties
+    if submitted_by and validator_email.lower().strip() == submitted_by.lower().strip():
+        from compliance.rbac import SeparationOfDutiesViolation  # local import avoids circular
+        raise SeparationOfDutiesViolation(
+            f"Validator ({validator_email}) and model submitter ({submitted_by}) must be "
+            "different people — SR 11-7 independence requirement."
+        )
+
     validation_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 

@@ -38,6 +38,14 @@ from feature_pipeline.features import FeaturePipelineConfig, compute_features
 
 logger = logging.getLogger(__name__)
 
+# PROMPT-05: Import tracing — no-op if opentelemetry-sdk is not installed
+try:
+    from observability.tracing import TRACER, span as _trace_span
+except ImportError:  # pragma: no cover
+    TRACER = None  # type: ignore[assignment]
+    import contextlib as _contextlib
+    _trace_span = _contextlib.nullcontext  # type: ignore[assignment]
+
 # ---------------------------------------------------------------------------
 # Column alias normalisation
 # ---------------------------------------------------------------------------
@@ -180,21 +188,23 @@ def compute_feature_matrix(
         len(applications_df),
     )
 
-    # 1. Normalise column aliases → canonical names
-    df = _normalise_columns(applications_df.copy())
+    with _trace_span("credit_core.compute_feature_matrix", TRACER,
+                     feature_version=version, rows=len(applications_df)):
+        # 1. Normalise column aliases → canonical names
+        df = _normalise_columns(applications_df.copy())
 
-    # 2. Delegate to canonical feature_pipeline implementation.
-    #    thin_file_alt_score is NOT produced by compute_features — it's added
-    #    by our enrichment step below, so we exclude it from the validation list.
-    base_feature_list = [
-        f for f in FeaturePipelineConfig(version=version).feature_list
-        if f != "thin_file_alt_score"
-    ]
-    config = FeaturePipelineConfig(version=version, feature_list=base_feature_list)
-    df = compute_features(df, config)
+        # 2. Delegate to canonical feature_pipeline implementation.
+        #    thin_file_alt_score is NOT produced by compute_features — it's added
+        #    by our enrichment step below, so we exclude it from the validation list.
+        base_feature_list = [
+            f for f in FeaturePipelineConfig(version=version).feature_list
+            if f != "thin_file_alt_score"
+        ]
+        config = FeaturePipelineConfig(version=version, feature_list=base_feature_list)
+        df = compute_features(df, config)
 
-    # 3. Apply thin-file enrichment (alt-data signals + thin-file boost)
-    df = _apply_thin_file_enrichment(df, alt_weights=alt_weights)
+        # 3. Apply thin-file enrichment (alt-data signals + thin-file boost)
+        df = _apply_thin_file_enrichment(df, alt_weights=alt_weights)
 
     logger.info(
         "credit_core.features: feature matrix complete — %d cols on %d rows",

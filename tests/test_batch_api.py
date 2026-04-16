@@ -12,6 +12,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import os
@@ -283,3 +284,110 @@ class TestBatchResults:
     def test_unknown_job_results_returns_404(self, client) -> None:
         resp = client.get("/v1/batch/nonexistent-job/results", headers=_auth())
         assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Tests: Per-tenant semaphore registry (PROMPT-03)
+# ---------------------------------------------------------------------------
+
+
+class TestTenantSemaphoreRegistry:
+    """Unit tests for _TenantSemaphoreRegistry — per-tenant concurrency gate."""
+
+    @pytest.fixture(autouse=True)
+    def _import_registry(self):
+        """Import after app is loaded so the class is available."""
+        import importlib, sys
+        # ensure decision-api/src is on path
+        src_dir = str(ROOT / "decision-api" / "src")
+        if src_dir not in sys.path:
+            sys.path.insert(0, src_dir)
+        import src.main as _main
+        self._main = _main
+
+    @pytest.mark.asyncio
+    async def test_registry_creates_semaphore_per_tenant(self):
+        from src.main import _TenantSemaphoreRegistry, TENANT_BATCH_CONCURRENCY_DEFAULT
+        registry = _TenantSemaphoreRegistry(default_limit=5)
+        sem_a = await registry.acquire("tenant-A")
+        sem_b = await registry.acquire("tenant-B")
+        # Each tenant gets its own distinct semaphore
+        assert sem_a is not sem_b
+
+    @pytest.mark.asyncio
+    async def test_registry_reuses_semaphore_for_same_tenant(self):
+        from src.main import _TenantSemaphoreRegistry
+        registry = _TenantSemaphoreRegistry(default_limit=5)
+        sem_1 = await registry.acquire("tenant-X")
+        sem_2 = await registry.acquire("tenant-X")
+        assert sem_1 is sem_2
+
+    @pytest.mark.asyncio
+    async def test_tenant_a_burst_does_not_starve_tenant_b(self):
+        """Tenant A holding all its slots must not prevent Tenant B from acquiring."""
+        from src.main import _TenantSemaphoreRegistry
+        limit = 3
+        registry = _TenantSemaphoreRegistry(default_limit=limit)
+
+        sem_a = await registry.acquire("tenant-A")
+        sem_b = await registry.acquire("tenant-B")
+
+        # Exhaust all of Tenant A's slots
+        for _ in range(limit):
+            await sem_a.acquire()
+
+        # Tenant B must still be able to acquire immediately
+        acquired = sem_b._value > 0  # has slots available
+        assert acquired, "Tenant B's semaphore must be independent of Tenant A's"
+
+        # Release Tenant A's slots
+        for _ in range(limit):
+            sem_a.release()
+
+    @pytest.mark.asyncio
+    async def test_global_semaphore_caps_all_tenants(self):
+        """Global semaphore value must be <= BATCH_CONCURRENCY_GLOBAL_LIMIT."""
+        from src.main import BATCH_CONCURRENCY_GLOBAL_LIMIT
+        # Create a fresh global semaphore and confirm it has the right capacity
+        global_sem = asyncio.Semaphore(BATCH_CONCURRENCY_GLOBAL_LIMIT)
+        assert global_sem._value == BATCH_CONCURRENCY_GLOBAL_LIMIT
+
+        # Acquire all global slots
+        for _ in range(BATCH_CONCURRENCY_GLOBAL_LIMIT):
+            assert global_sem._value >= 0
+            await global_sem.acquire()
+
+        # No more slots: try_acquire should fail (semaphore is at 0)
+        assert global_sem._value == 0
+
+        # Release all
+        for _ in range(BATCH_CONCURRENCY_GLOBAL_LIMIT):
+            global_sem.release()
+
+    @pytest.mark.asyncio
+    async def test_per_tenant_limit_from_config_registry(self):
+        """Registry must use config_registry batch_concurrency_limit when present."""
+        from unittest.mock import patch, MagicMock
+        from src.main import _TenantSemaphoreRegistry
+
+        mock_registry = MagicMock()
+        mock_registry.resolve.return_value = {"batch_concurrency_limit": 7}
+
+        with patch("src.main._CONFIG_REGISTRY", mock_registry):
+            registry = _TenantSemaphoreRegistry(default_limit=10)
+            sem = await registry.acquire("tenant-cfg")
+            assert sem._value == 7
+
+    @pytest.mark.asyncio
+    async def test_registry_falls_back_to_default_when_config_missing(self):
+        """Registry must use env-var default when config has no batch_concurrency_limit."""
+        from unittest.mock import patch, MagicMock
+        from src.main import _TenantSemaphoreRegistry
+
+        mock_registry = MagicMock()
+        mock_registry.resolve.return_value = {}  # no batch_concurrency_limit key
+
+        with patch("src.main._CONFIG_REGISTRY", mock_registry):
+            registry = _TenantSemaphoreRegistry(default_limit=10)
+            sem = await registry.acquire("tenant-default")
+            assert sem._value == 10

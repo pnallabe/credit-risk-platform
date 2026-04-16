@@ -105,9 +105,9 @@ _ADDITIONAL_FEATURES = [
 # ---------------------------------------------------------------------------
 
 
-def _build_row(row: pd.Series, version: str, event_timestamp: datetime, as_of_date: date) -> Dict[str, Any]:
-    """Convert a single DataFrame row into an insert-ready dict."""
-    feature_json = {col: row[col] for col in _ADDITIONAL_FEATURES if col in row.index}
+def _build_row(row: Dict[str, Any], version: str, event_timestamp: datetime, as_of_date: date) -> Dict[str, Any]:
+    """Convert a single DataFrame row (plain dict) into an insert-ready dict."""
+    feature_json = {col: row[col] for col in _ADDITIONAL_FEATURES if col in row}
 
     return {
         "application_id": row["application_id"],
@@ -170,8 +170,12 @@ def _build_upsert_sql(dialect: str) -> str:
 
 
 def _df_to_rows(df: pd.DataFrame, version: str, event_timestamp: datetime, as_of_date: date) -> List[Dict[str, Any]]:
-    """Convert a DataFrame to a list of insert dicts."""
-    return [_build_row(row, version, event_timestamp, as_of_date) for _, row in df.iterrows()]
+    """Convert a DataFrame to a list of insert dicts.
+
+    Uses ``df.to_dict("records")`` for a single-pass O(n) conversion — 10–50×
+    faster than ``iterrows()`` because it avoids per-row Python object boxing.
+    """
+    return [_build_row(row, version, event_timestamp, as_of_date) for row in df.to_dict("records")]
 
 
 # ---------------------------------------------------------------------------
