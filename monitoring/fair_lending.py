@@ -36,10 +36,11 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -249,6 +250,11 @@ def analyze_fair_lending(
     output_dir: Optional[str] = None,
     surname_col: str = "surname",
     tract_col: str = "census_tract",
+    # GAP-12: optional persistence kwargs
+    db_url: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
 ) -> FairLendingReport:
     """Run a full fair lending analysis on a decisions DataFrame.
 
@@ -390,6 +396,22 @@ def analyze_fair_lending(
     if output_dir:
         _save_report(report, output_dir)
 
+    # GAP-12: persist to time-series table when db_url is provided
+    if db_url:
+        import asyncio as _asyncio
+        _today = date.today().isoformat()
+        _tid = tenant_id or "default"
+        _f = from_date or _today
+        _t = to_date or _today
+        try:
+            _loop = _asyncio.get_running_loop()
+            _loop.create_task(save_fair_lending_report(report, _tid, db_url, _f, _t))
+        except RuntimeError:
+            try:
+                _asyncio.run(save_fair_lending_report(report, _tid, db_url, _f, _t))
+            except Exception as _e:
+                logger.warning("save_fair_lending_report failed (non-blocking): %s", _e)
+
     return report
 
 
@@ -402,3 +424,325 @@ def _save_report(report: FairLendingReport, output_dir: str) -> Path:
     path.write_text(json.dumps(asdict(report), indent=2, cls=_NumpyEncoder))
     logger.info("Fair lending report saved to %s", path)
     return path
+
+
+# ---------------------------------------------------------------------------
+# GAP-12: Time-series persistence for fair lending history
+# ---------------------------------------------------------------------------
+
+_FAIR_LENDING_HISTORY_DDL = """
+CREATE TABLE IF NOT EXISTS fair_lending_history (
+    report_id              TEXT PRIMARY KEY,
+    tenant_id              TEXT NOT NULL,
+    run_date               TEXT NOT NULL,
+    from_date              TEXT NOT NULL,
+    to_date                TEXT NOT NULL,
+    dir_minority           REAL,
+    dir_female             REAL,
+    approval_rate_majority REAL,
+    approval_rate_minority REAL,
+    chi_sq_p_value         REAL,
+    alert_triggered        INTEGER,
+    report_json            TEXT NOT NULL
+);
+"""
+
+
+async def save_fair_lending_report(
+    report: FairLendingReport,
+    tenant_id: str,
+    db_url: str,
+    from_date: Optional[str] = None,
+    to_date: Optional[str] = None,
+) -> str:
+    """Persist *report* to ``fair_lending_history`` and return the new ``report_id``.
+
+    Parameters
+    ----------
+    report:
+        The :class:`FairLendingReport` to persist.
+    tenant_id:
+        Opaque tenant identifier.
+    db_url:
+        SQLAlchemy async connection URL.
+    from_date / to_date:
+        Inclusive date range the report covers (YYYY-MM-DD).
+        Defaults to today's date for both if not supplied.
+    """
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy import text
+
+    report_id = str(uuid.uuid4())
+    run_date = date.today().isoformat()
+    _from = from_date or run_date
+    _to = to_date or run_date
+    alert = 1 if (report.dir_flag or report.approval_parity_flag) else 0
+    report_json = json.dumps(asdict(report), cls=_NumpyEncoder)
+
+    engine = create_async_engine(db_url, echo=False)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text(_FAIR_LENDING_HISTORY_DDL))
+            await conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO fair_lending_history "
+                    "(report_id, tenant_id, run_date, from_date, to_date, "
+                    " dir_minority, dir_female, approval_rate_majority, approval_rate_minority, "
+                    " chi_sq_p_value, alert_triggered, report_json) "
+                    "VALUES (:report_id, :tenant_id, :run_date, :from_date, :to_date, "
+                    " :dir_minority, :dir_female, :approval_rate_majority, :approval_rate_minority, "
+                    " :chi_sq_p_value, :alert_triggered, :report_json)"
+                ),
+                {
+                    "report_id": report_id,
+                    "tenant_id": tenant_id,
+                    "run_date": run_date,
+                    "from_date": _from,
+                    "to_date": _to,
+                    "dir_minority": report.dir_score,
+                    "dir_female": None,  # populated when gender analysis is added
+                    "approval_rate_majority": report.control_approval_rate,
+                    "approval_rate_minority": report.protected_approval_rate,
+                    "chi_sq_p_value": report.approval_parity_p_value,
+                    "alert_triggered": alert,
+                    "report_json": report_json,
+                },
+            )
+    finally:
+        await engine.dispose()
+
+    logger.info("Fair lending report persisted: report_id=%s tenant=%s", report_id, tenant_id)
+    return report_id
+
+
+# ---------------------------------------------------------------------------
+# GAP-11: Fair Lending Scenario Simulation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FairLendingSimulationResult:
+    """Result of replaying historical decisions under a proposed policy config.
+
+    Attributes
+    ----------
+    baseline_dir_minority:
+        DIR computed on the original (stored) decisions.
+    simulated_dir_minority:
+        DIR computed after re-running with *new_policy_config*.
+    delta_dir_minority:
+        simulated_dir_minority - baseline_dir_minority.
+    baseline_approval_rate:
+        Overall approval rate on original decisions.
+    simulated_approval_rate:
+        Overall approval rate on simulated decisions.
+    delta_approval_rate:
+        simulated_approval_rate - baseline_approval_rate.
+    alert:
+        True if simulated DIR < 0.80 (4/5ths rule breach).
+    applications_tested:
+        Number of applications replayed.
+    policy_config_used:
+        The *new_policy_config* that was used.
+    """
+
+    baseline_dir_minority: float
+    simulated_dir_minority: float
+    delta_dir_minority: float
+    baseline_approval_rate: float
+    simulated_approval_rate: float
+    delta_approval_rate: float
+    alert: bool
+    applications_tested: int
+    policy_config_used: Dict[str, Any]
+
+
+def simulate_fair_lending_impact(
+    new_policy_config: Dict[str, Any],
+    historical_decisions_df: pd.DataFrame,
+    fraud_model: Any,
+    risk_model: Any,
+) -> FairLendingSimulationResult:
+    """Replay historical decisions under *new_policy_config* and report delta DIR.
+
+    The simulation is best-effort:
+    - Rows that lack sufficient feature data to reconstruct a ``DecisionRequest``
+      are skipped (counted in ``applications_tested`` only for successful replays).
+    - The result is a *hypothetical* analysis only and must not substitute for a
+      production override.
+
+    Parameters
+    ----------
+    new_policy_config:
+        Dict of policy threshold overrides, e.g. ``{"pd_threshold_low": 0.04}``.
+    historical_decisions_df:
+        DataFrame of audit log records (one row per decision) produced by
+        ``audit.logger.get_audit_records_by_period()``.
+    fraud_model:
+        Pre-loaded fraud detection model (or None).
+    risk_model:
+        Pre-loaded credit risk model (or None).
+
+    Returns
+    -------
+    FairLendingSimulationResult
+    """
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).parents[1]))
+
+    from decision_engine.engine import (
+        CreditResult, DecisionRequest, FraudResult, make_decision,
+    )
+    from models.credit_risk.predict import predict_pd
+    from models.fraud_detection.predict import predict_fraud
+    from models.pricing.engine import PricingConfig, PricingResult, calculate_pricing
+
+    # Identify columns available for demographic proxy
+    # Use 'bisg_minority_proxy' if present, else fall back to 'decision' column only
+    protected_col = "bisg_minority_proxy"
+    control_group = "majority"
+    decision_col = "decision_output"
+
+    # ------------------------------------------------------------------ #
+    # 1. Compute baseline DIR from stored decisions                        #
+    # ------------------------------------------------------------------ #
+    baseline_df = historical_decisions_df.copy()
+
+    # Normalise decision column — audit records use 'decision_output'
+    if "decision_output" in baseline_df.columns:
+        baseline_df["decision"] = baseline_df["decision_output"]
+    elif "decision" not in baseline_df.columns:
+        baseline_df["decision"] = "REJECT"
+
+    overall_approvals_baseline = int(
+        (baseline_df["decision"].str.upper() == "APPROVE").sum()
+    )
+    n_total = len(baseline_df)
+    baseline_approval_rate = overall_approvals_baseline / n_total if n_total > 0 else 0.0
+
+    # DIR baseline — only possible if demographic column exists
+    baseline_dir: float = 0.0
+    if protected_col in baseline_df.columns:
+        try:
+            bl_report = analyze_fair_lending(
+                baseline_df,
+                protected_col=protected_col,
+                control_group=control_group,
+                decision_col="decision",
+            )
+            baseline_dir = bl_report.dir_score or 0.0
+        except Exception as exc:
+            logger.warning("Baseline DIR computation failed: %s", exc)
+
+    # ------------------------------------------------------------------ #
+    # 2. Replay each application under the proposed policy                #
+    # ------------------------------------------------------------------ #
+    simulated_decisions: List[str] = []
+    applications_tested = 0
+
+    for _, row in baseline_df.iterrows():
+        try:
+            raw_features = row.get("input_features") or {}
+            if isinstance(raw_features, str):
+                import json as _json  # local import avoids shadow
+                raw_features = _json.loads(raw_features)
+            if not isinstance(raw_features, dict) or not raw_features:
+                simulated_decisions.append(str(row.get("decision", "REJECT")))
+                continue
+
+            feat_df = pd.DataFrame([raw_features])
+
+            # Re-run models
+            try:
+                fraud_out = predict_fraud(feat_df, _model=fraud_model)
+                f_row = fraud_out.iloc[0]
+                fraud_result = FraudResult(
+                    fraud_probability=float(f_row["fraud_probability"]),
+                    fraud_flag=str(f_row["fraud_flag"]),
+                )
+            except Exception:
+                fp = float(row.get("fraud_score", 0.0))
+                flag = "continue" if fp < 0.30 else ("manual_review" if fp <= 0.60 else "reject")
+                fraud_result = FraudResult(fraud_probability=fp, fraud_flag=flag)
+
+            try:
+                credit_out = predict_pd(feat_df, _model=risk_model)
+                c_row = credit_out.iloc[0]
+                pd_score = float(c_row["pd_score"])
+                pd_band = str(c_row["pd_band"])
+            except Exception:
+                pd_score = float(row.get("risk_score", 0.10))
+                pd_band = "low" if pd_score < 0.05 else ("medium" if pd_score <= 0.10 else "high")
+
+            credit_result = CreditResult(pd_score=pd_score, pd_band=pd_band)
+
+            # Pricing stub
+            try:
+                pricing_result = calculate_pricing(
+                    pd_score=pd_score,
+                    loan_amount=float(raw_features.get("loan_amount", 5000)),
+                    loan_term_months=int(raw_features.get("loan_term_months", 36)),
+                    config=PricingConfig(),
+                )
+            except Exception:
+                pricing_result = PricingResult(
+                    recommended_rate=7.5, base_rate=5.0, risk_premium=2.5,
+                    expected_loss=0.0, expected_profit=0.0, profitability_flag="pass",
+                )
+
+            dr = DecisionRequest(
+                application_id=str(row.get("application_id", str(uuid.uuid4()))),
+                fraud_result=fraud_result,
+                credit_result=credit_result,
+                pricing_result=pricing_result,
+                loan_amount=float(raw_features.get("loan_amount", 5000)),
+                loan_term_months=int(raw_features.get("loan_term_months", 36)),
+                debt_to_income_ratio=float(raw_features.get("debt_to_income_ratio", 0.2)),
+                num_open_accounts=int(raw_features.get("num_open_accounts", 3)),
+                annual_income=raw_features.get("annual_income"),
+            )
+
+            # Use new policy config WITHOUT four-eyes (simulation context)
+            result = make_decision(dr, policy_overrides=new_policy_config if new_policy_config else None, _simulation=True)
+            simulated_decisions.append(result.decision)
+            applications_tested += 1
+
+        except Exception as exc:
+            logger.debug("Simulation replay skipped for a row: %s", exc)
+            simulated_decisions.append(str(row.get("decision", "REJECT")))
+
+    # ------------------------------------------------------------------ #
+    # 3. Compute simulated DIR                                             #
+    # ------------------------------------------------------------------ #
+    sim_df = baseline_df.copy()
+    sim_df["decision"] = simulated_decisions if len(simulated_decisions) == len(sim_df) else sim_df["decision"]
+
+    simulated_approval_rate = float(
+        (pd.Series(simulated_decisions).str.upper() == "APPROVE").mean()
+    ) if simulated_decisions else 0.0
+
+    simulated_dir: float = 0.0
+    if protected_col in sim_df.columns:
+        try:
+            sim_report = analyze_fair_lending(
+                sim_df,
+                protected_col=protected_col,
+                control_group=control_group,
+                decision_col="decision",
+            )
+            simulated_dir = sim_report.dir_score or 0.0
+        except Exception as exc:
+            logger.warning("Simulated DIR computation failed: %s", exc)
+
+    return FairLendingSimulationResult(
+        baseline_dir_minority=baseline_dir,
+        simulated_dir_minority=simulated_dir,
+        delta_dir_minority=simulated_dir - baseline_dir,
+        baseline_approval_rate=baseline_approval_rate,
+        simulated_approval_rate=simulated_approval_rate,
+        delta_approval_rate=simulated_approval_rate - baseline_approval_rate,
+        alert=simulated_dir > 0 and simulated_dir < DIR_THRESHOLD,
+        applications_tested=applications_tested,
+        policy_config_used=new_policy_config,
+    )

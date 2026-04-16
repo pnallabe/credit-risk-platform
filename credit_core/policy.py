@@ -37,6 +37,14 @@ from models.pricing.engine import PricingConfig, calculate_pricing
 
 logger = logging.getLogger(__name__)
 
+# PROMPT-05: Import tracing — no-op if opentelemetry-sdk is not installed
+try:
+    from observability.tracing import TRACER, span as _trace_span
+except ImportError:  # pragma: no cover
+    TRACER = None  # type: ignore[assignment]
+    import contextlib as _contextlib
+    _trace_span = _contextlib.nullcontext  # type: ignore[assignment]
+
 # Default policy version — overridable via ``policy_version`` parameter.
 DEFAULT_POLICY_VERSION = "v1"
 
@@ -119,71 +127,73 @@ def evaluate_policy(
 
     results: List[PolicyResult] = []
 
-    for _, row in merged.iterrows():
-        app_id = str(row["application_id"])
-        pd_score = float(row.get("pd_score", 0.0))
-        pd_band = str(row.get("pd_band", "high"))
-        fraud_probability = float(row.get("fraud_probability", 0.0))
-        fraud_flag = str(row.get("fraud_flag", "reject"))
-        loan_amount = float(row.get("loan_amount", 0.0))
-        loan_term_months = int(row.get("loan_term_months", 36))
-        dti = float(row.get("debt_to_income_ratio", 0.0))
-        num_open = int(row.get("num_open_accounts", 0))
-        annual_income = float(row.get("annual_income", 0.0))
-        borrower_state = row.get("borrower_state", None)
-        if pd.isna(borrower_state):
-            borrower_state = None
+    with _trace_span("credit_core.evaluate_policy", TRACER,
+                     policy_version=policy_version, batch_size=len(merged)):
+        for _, row in merged.iterrows():
+            app_id = str(row["application_id"])
+            pd_score = float(row.get("pd_score", 0.0))
+            pd_band = str(row.get("pd_band", "high"))
+            fraud_probability = float(row.get("fraud_probability", 0.0))
+            fraud_flag = str(row.get("fraud_flag", "reject"))
+            loan_amount = float(row.get("loan_amount", 0.0))
+            loan_term_months = int(row.get("loan_term_months", 36))
+            dti = float(row.get("debt_to_income_ratio", 0.0))
+            num_open = int(row.get("num_open_accounts", 0))
+            annual_income = float(row.get("annual_income", 0.0))
+            borrower_state = row.get("borrower_state", None)
+            if pd.isna(borrower_state):
+                borrower_state = None
 
-        # Compute pricing (needed by make_decision)
-        pricing_result = calculate_pricing(
-            pd_score=pd_score,
-            fraud_flag=fraud_flag,
-            loan_amount=loan_amount,
-            config=pricing_cfg,
-            borrower_state=str(borrower_state) if borrower_state else None,
-        )
-
-        decision_req = DecisionRequest(
-            application_id=app_id,
-            fraud_result=FraudResult(
-                fraud_probability=fraud_probability,
-                fraud_flag=fraud_flag,
-            ),
-            credit_result=CreditResult(
+            # Compute pricing (needed by make_decision)
+            pricing_result = calculate_pricing(
                 pd_score=pd_score,
-                pd_band=pd_band,
-            ),
-            pricing_result=pricing_result,
-            loan_amount=loan_amount,
-            loan_term_months=loan_term_months,
-            debt_to_income_ratio=dti,
-            num_open_accounts=num_open,
-            annual_income=annual_income,
-        )
-
-        dr: DecisionResult = make_decision(decision_req)
-
-        approved_amount: Optional[float] = None
-        approved_rate: Optional[float] = None
-        approved_term: Optional[int] = None
-        if dr.decision == "APPROVE":
-            approved_amount = loan_amount
-            approved_rate = dr.recommended_rate
-            approved_term = loan_term_months
-
-        results.append(
-            PolicyResult(
-                application_id=app_id,
-                decision=dr.decision,
-                reason_codes=dr.reason_codes,
-                approved_amount=approved_amount,
-                approved_rate=approved_rate,
-                approved_term_months=approved_term,
-                policy_version=policy_version,
-                decision_latency_ms=dr.decision_latency_ms,
-                raw=dr,
+                fraud_flag=fraud_flag,
+                loan_amount=loan_amount,
+                config=pricing_cfg,
+                borrower_state=str(borrower_state) if borrower_state else None,
             )
-        )
+
+            decision_req = DecisionRequest(
+                application_id=app_id,
+                fraud_result=FraudResult(
+                    fraud_probability=fraud_probability,
+                    fraud_flag=fraud_flag,
+                ),
+                credit_result=CreditResult(
+                    pd_score=pd_score,
+                    pd_band=pd_band,
+                ),
+                pricing_result=pricing_result,
+                loan_amount=loan_amount,
+                loan_term_months=loan_term_months,
+                debt_to_income_ratio=dti,
+                num_open_accounts=num_open,
+                annual_income=annual_income,
+            )
+
+            dr: DecisionResult = make_decision(decision_req)
+
+            approved_amount: Optional[float] = None
+            approved_rate: Optional[float] = None
+            approved_term: Optional[int] = None
+            if dr.decision == "APPROVE":
+                approved_amount = loan_amount
+                approved_rate = dr.recommended_rate
+                approved_term = loan_term_months
+
+            results.append(
+                PolicyResult(
+                    application_id=app_id,
+                    decision=dr.decision,
+                    reason_codes=dr.reason_codes,
+                    approved_amount=approved_amount,
+                    approved_rate=approved_rate,
+                    approved_term_months=approved_term,
+                    policy_version=policy_version,
+                    decision_latency_ms=dr.decision_latency_ms,
+                    raw=dr,
+                )
+            )
 
     logger.info(
         "credit_core.policy: evaluated %d applications (policy_version=%s)",

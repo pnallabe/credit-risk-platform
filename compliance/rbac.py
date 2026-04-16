@@ -98,6 +98,13 @@ FOUR_EYES_RULES: dict[str, dict] = {
         "approver_role": "legal_counsel",
         "prohibited_overlap": True,
     },
+    # GAP-02: Policy threshold overrides require a second approver (risk_analyst or above).
+    "policy_override": {
+        "min_approver_role": "risk_analyst",
+        "submitter_cannot_approve": True,
+        "prohibited_overlap": True,
+        "description": "Policy threshold override requires a second approver",
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -227,6 +234,38 @@ def enforce_four_eyes(
             f"Actor and approver cannot be the same person ({actor_email}).  "
             "Ref: Section 23.8 RBAC matrix."
         )
+
+
+def validate_override_submission(
+    submitted_by: str,
+    approved_by: str,
+    justification: str = "",
+) -> None:
+    """Validate a policy override submission against four-eyes rules.
+
+    Parameters
+    ----------
+    submitted_by :
+        Email of the person requesting the override.
+    approved_by :
+        Email of the second approver.
+    justification :
+        Free-text business justification.  Must be at least 10 characters.
+
+    Raises
+    ------
+    SeparationOfDutiesViolation
+        If ``submitted_by == approved_by``.
+    ValueError
+        If ``justification`` is fewer than 10 characters.
+    """
+    if justification and len(justification) < 10:
+        raise ValueError(
+            f"Policy override justification must be at least 10 characters "
+            f"(got {len(justification)})."
+        )
+    # Reuse the general four-eyes enforcer for the same-person check
+    enforce_four_eyes("policy_override", actor_email=submitted_by, approver_email=approved_by)
 
 
 def check_permission(role: Role, resource: str, operation: str) -> bool:

@@ -1,0 +1,50 @@
+========================================================================
+  FREDDIE MAC SFLLD 2021 — FAIR LENDING EXECUTIVE SUMMARY
+========================================================================
+  Packet ID    : f7c01488-309b-4ff0-bc9f-a9513124038f
+  Generated    : 2026-04-14T03:27:36.410598+00:00
+  Period       : 2021-01-01 – 2021-12-31
+  Loans        : 844,766
+  Mode         : live_bigquery
+  Rate Spread  : 150 bps above median
+========================================================================
+
+  TEST RESULTS
+  ────────────────────────────────────────────────────────────────────
+  Test                                       DIR Score  Status
+  ────────────────────────────────────────────────────────────────────
+  dir_q1_vs_q5                                  1.0408  CAUTION (chi-sq p<0.05; DIR ≥ 0.80)
+  dir_q2_vs_q5                                  0.9735  CAUTION (chi-sq p<0.05; DIR ≥ 0.80)
+  dir_fthb                                      1.0657  CAUTION (chi-sq p<0.05; DIR ≥ 0.80)
+  dir_broker_vs_retail                          1.1162  CAUTION (chi-sq p<0.05; DIR ≥ 0.80)
+  ────────────────────────────────────────────────────────────────────
+
+  OVERALL STATUS
+  ────────────────────────────────────────────────────────────────────
+  ✓ NO DIR VIOLATIONS — All DIRs ≥ 0.80. Statistical parity flags noted at scale.
+  ────────────────────────────────────────────────────────────────────
+
+  GEOGRAPHIC FLAGS
+  ────────────────────────────────────────────────────────────────────
+  dir_q1_vs_q5: VI
+  No other geographic flags.
+
+  IMPORTANT NOTES
+  ────────────────────────────────────────────────────────────────────
+  1. Virgin Islands (VI) geographic flag is a low-volume artifact
+     consistent with limited GSE-eligible loans in that territory.
+  2. Chi-squared parity flags at n ≈ 844K are expected and do not
+     indicate ECOA violations absent a DIR < 0.80.
+  3. Rate-spread analysis is a PROXY method. Where available,
+     HMDA LAR with self-reported race/ethnicity should be used
+     for confirmatory ECOA analysis.
+
+  REGULATORY FRAMEWORKS ADDRESSED
+  ────────────────────────────────────────────────────────────────────
+  • ECOA / Regulation B
+  • HMDA / Regulation C
+  • CFPB Fair Lending Examination Procedures (2022)
+  • OCC Comptroller's Handbook — Fair Lending
+  • SR 11-7 Model Risk Management
+
+========================================================================

@@ -29,6 +29,7 @@ const ROLE_NAV: Record<UserRole, NavItem[]> = {
     { label: "AI Assistant", href: "/agent", icon: "🤖" },
   ],
   compliance: [
+    { label: "Command Center", href: "/compliance/command-center", icon: "🎛️" },
     { label: "Fair Lending", href: "/compliance/fair-lending", icon: "⚖️" },
     { label: "Adverse Actions", href: "/compliance/adverse-actions", icon: "📛" },
     { label: "Audit Explorer", href: "/compliance/audit-explorer", icon: "🔍" },

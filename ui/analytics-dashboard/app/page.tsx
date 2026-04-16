@@ -5,9 +5,10 @@ import type { UserRole } from "@/auth";
 const ROLE_HOME: Record<UserRole, string> = {
   underwriter: "/underwriter/queue",
   risk_analyst: "/risk-analyst/portfolio",
-  compliance: "/compliance/fair-lending",
+  compliance: "/compliance/command-center",
   data_scientist: "/data-scientist/drift",
   executive: "/executive",
+  regulator: "/regulator",
 };
 
 export default async function RootPage() {

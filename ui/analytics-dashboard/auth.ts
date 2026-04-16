@@ -8,7 +8,8 @@ export type UserRole =
   | "risk_analyst"
   | "compliance"
   | "data_scientist"
-  | "executive";
+  | "executive"
+  | "regulator";
 
 // Demo users for development (replace with DB lookup in production)
 // pragma: allowlist secret
@@ -18,6 +19,7 @@ const DEMO_USERS: Record<string, { password: string; role: UserRole; name: strin
   "compliance@lendsmart.example": { password: "demo1234", role: "compliance", name: "Morgan Lee" }, // pragma: allowlist secret
   "scientist@lendsmart.example": { password: "demo1234", role: "data_scientist", name: "Jordan Kim" }, // pragma: allowlist secret
   "exec@lendsmart.example": { password: "demo1234", role: "executive", name: "Casey Park" }, // pragma: allowlist secret
+  "regulator@lendsmart.example": { password: "demo1234", role: "regulator", name: "Taylor Reyes" }, // pragma: allowlist secret
 };
 
 export const { handlers, auth, signIn, signOut } = NextAuth({

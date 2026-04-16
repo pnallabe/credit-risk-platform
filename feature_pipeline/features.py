@@ -14,6 +14,7 @@ Top-level entry point
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from typing import List
@@ -356,4 +357,39 @@ def compute_features(df: pd.DataFrame, config: FeaturePipelineConfig) -> pd.Data
         raise ValueError(f"Feature pipeline failed to produce columns: {missing}")
 
     logger.info("Feature computation complete — %d feature columns produced", len(config.feature_list))
+
+    # ---------------------------------------------------------------------------
+    # Data-lineage instrumentation (Sprint 3-A) — best-effort, never blocks.
+    # Records a LineageNode for this feature pipeline run so that exam packets
+    # can trace which feature version produced each model's training data.
+    # ---------------------------------------------------------------------------
+    try:
+        import os
+        from data_lineage.lineage_tracker import LineageNode, record_node
+
+        _db_url = os.environ.get("DECISION_AUDIT_DB_URL", "sqlite+aiosqlite:///./decision_audit.db")
+        _node = LineageNode(
+            node_type="feature_pipeline",
+            name="credit_risk_features",
+            version=config.version,
+            description=f"Feature pipeline v{config.version} — {len(config.feature_list)} features",
+            schema_hint=",".join(config.feature_list[:20]),
+            source_uri=os.environ.get("FEATURE_PIPELINE_SOURCE_URI", ""),
+            tenant_id=os.environ.get("TENANT_ID", "default"),
+        )
+
+        def _fire_and_forget() -> None:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(record_node(_node, _db_url))
+                else:
+                    loop.run_until_complete(record_node(_node, _db_url))
+            except Exception:  # pragma: no cover
+                pass  # lineage recording must never break the pipeline
+
+        _fire_and_forget()
+    except Exception:  # data_lineage not yet available or any import error
+        pass
+
     return result

@@ -1,0 +1,3 @@
+PDF rendering failed (reportlab not installed).
+Install reportlab: pip install reportlab
+Error: StyleSheet1 instance has no attribute '_styles'

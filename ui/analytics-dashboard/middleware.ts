@@ -9,6 +9,7 @@ const ROLE_ROUTES: Record<string, UserRole[]> = {
   "/compliance": ["compliance"],
   "/data-scientist": ["data_scientist"],
   "/executive": ["executive"],
+  "/regulator": ["regulator"],
   "/agent": ["underwriter", "risk_analyst", "compliance", "data_scientist", "executive"],
 };
 
@@ -25,6 +26,13 @@ export async function middleware(request: NextRequest) {
   }
 
   const userRole = (session.user as { role?: UserRole }).role;
+
+  // Regulator routes: read-only enforcement — block non-GET methods
+  if (pathname.startsWith("/regulator")) {
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return new NextResponse(null, { status: 405, statusText: "Method Not Allowed" });
+    }
+  }
 
   // Check role-based access
   for (const [routePrefix, allowedRoles] of Object.entries(ROLE_ROUTES)) {
@@ -45,6 +53,7 @@ export const config = {
     "/compliance/:path*",
     "/data-scientist/:path*",
     "/executive/:path*",
+    "/regulator/:path*",
     "/agent/:path*",
   ],
 };

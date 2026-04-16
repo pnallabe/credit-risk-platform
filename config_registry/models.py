@@ -169,6 +169,25 @@ class TenantConfigVersion:
     def get_rate_limits(self) -> Dict[str, Any]:
         return self.config_json.get("rate_limits", {})
 
+    def get_model_bindings(self) -> Dict[str, str]:
+        """Return per-tenant model artefact URI overrides.
+
+        Dict keys are model roles:
+          "pd_champion", "pd_challenger",
+          "fraud_champion",
+          "cc_val_champion", "cc_val_challenger",
+          "cc_port_champion", "cc_port_challenger",
+          "mort_champion", "mort_challenger"
+
+        Values are fully-qualified artefact URIs:
+          "models:/credit_risk/Production"   (MLflow registry URI)
+          "gs://my-bucket/models/credit_risk_v2.pkl"  (GCS path)
+          "/app/models/credit_risk_v2.pkl"            (local path)
+
+        Returns an empty dict if no model bindings are configured.
+        """
+        return self.config_json.get("model_bindings", {})
+
 
 # ---------------------------------------------------------------------------
 # Rollback intent record (returned by ConfigRegistryService.rollback)
