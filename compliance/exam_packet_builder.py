@@ -431,6 +431,114 @@ async def build_data_lineage_component(
         )
 
 
+async def build_ai_agent_audit_component(
+    spec: ExamPacketSpec,
+    db_url: str,
+) -> ExamPacketComponent:
+    """Build the AI Agent Audit Appendix component for regulatory exam packets.
+
+    Queries ai_agent_audit_log for all turns within the spec date range and
+    computes summary statistics required by PRD §4.4.1 GNRI-011:
+      - Total query count
+      - Unique session count
+      - Grounding rate percentage
+      - Average / min confidence scores
+      - Tools called distribution
+      - Chain verification status via verify_ai_agent_chain()
+
+    Returns ExamPacketComponent with status="complete" on success,
+    status="error" on any exception, status="stub" if ai_agent_audit_log
+    is empty for the specified period.
+    """
+    try:
+        # Strip SQLAlchemy async prefix so SQLite path is bare
+        _ai_db = db_url
+        for _prefix in ("sqlite+aiosqlite:///", "sqlite:///"):
+            if _ai_db.startswith(_prefix):
+                _ai_db = _ai_db[len(_prefix):]
+                break
+
+        import sys as _sys, os as _os  # noqa: PLC0415
+        _ai_src = _os.path.normpath(
+            _os.path.join(_os.path.dirname(__file__), "..", "ai-agent", "src")
+        )
+        if _ai_src not in _sys.path:
+            _sys.path.insert(0, _ai_src)
+        from ai_audit_log import get_ai_audit_records  # noqa: PLC0415
+        from audit.chain_verifier import verify_ai_agent_chain  # noqa: PLC0415
+
+        records = await get_ai_audit_records(
+            db_url=_ai_db,
+            from_date=spec.from_date,
+            to_date=spec.to_date,
+        )
+
+        if not records:
+            return ExamPacketComponent(
+                name="ai_agent_audit",
+                status="stub",
+                data={"note": "No AI agent audit records found for the specified period."},
+            )
+
+        total_queries = len(records)
+        unique_sessions = len({r.session_id for r in records})
+        grounded_count = sum(1 for r in records if r.grounded)
+        grounding_rate_pct = round((grounded_count / total_queries) * 100, 2) if total_queries else 0.0
+
+        scores = [r.confidence_score for r in records if r.confidence_score is not None]
+        avg_confidence = round(sum(scores) / len(scores), 4) if scores else None
+        min_confidence = round(min(scores), 4) if scores else None
+
+        label_dist: Dict[str, int] = {}
+        for r in records:
+            lbl = r.confidence_label or "unknown"
+            label_dist[lbl] = label_dist.get(lbl, 0) + 1
+
+        tools_dist: Dict[str, int] = {}
+        for r in records:
+            if r.tools_called:
+                try:
+                    tools = json.loads(r.tools_called)
+                    for t in tools:
+                        tools_dist[t] = tools_dist.get(t, 0) + 1
+                except Exception:
+                    pass
+
+        # Chain verification
+        chain_result = await verify_ai_agent_chain(_ai_db)
+        chain_status = "verified" if chain_result.verified else "tampered"
+
+        return ExamPacketComponent(
+            name="ai_agent_audit",
+            status="complete",
+            data={
+                "total_queries": total_queries,
+                "unique_sessions": unique_sessions,
+                "grounded_count": grounded_count,
+                "grounding_rate_pct": grounding_rate_pct,
+                "avg_confidence_score": avg_confidence,
+                "min_confidence_score": min_confidence,
+                "confidence_label_distribution": label_dist,
+                "tools_called_distribution": tools_dist,
+                "chain_verification": {
+                    "status": chain_status,
+                    "rows_checked": chain_result.rows_checked,
+                    "gap_detected": chain_result.gap_detected,
+                    "first_tampered_log_id": chain_result.first_tampered_log_id,
+                },
+                "from_date": spec.from_date,
+                "to_date": spec.to_date,
+            },
+        )
+    except Exception as exc:
+        return ExamPacketComponent(
+            name="ai_agent_audit",
+            status="error",
+            data=None,
+            error_message=str(exc),
+        )
+
+
 # ---------------------------------------------------------------------------
 # Component dispatcher map
 # ---------------------------------------------------------------------------
@@ -443,6 +551,7 @@ _COMPONENT_BUILDERS = {
     "fair_lending_analysis": build_fair_lending_component,
     "committee_approvals": build_committee_approvals_component,
     "data_lineage":        build_data_lineage_component,
+    "ai_agent_audit":      build_ai_agent_audit_component,
 }
 
 

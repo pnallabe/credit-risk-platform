@@ -88,6 +88,12 @@ DB_URL = os.getenv(
     "DATABASE_URL",
     "sqlite+aiosqlite:///./decision_audit.db",
 )
+# GAP-22: HITL approval store for exam packets
+_APPROVAL_DB_URL = os.getenv("APPROVAL_DB_URL", "./exam_packet_approvals.db")
+# GAP-23: Referral queue DB (SQLite bare path)
+_REFERRAL_DB_URL = os.getenv("REFERRAL_DB_URL", "./referral_queue.db")
+
+import json as _json_module  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # CRIT-01: JWT_SECRET must be explicitly set to a non-default strong secret.
@@ -1111,8 +1117,20 @@ async def create_decision(
     tenant_id: str = _user["tenant_id"]
     response = await _run_pipeline(application, tenant_id=tenant_id)
     if response.decision == "MANUAL_REVIEW":
+        # GAP-23: persist routine to referral queue for loan officer action
+        try:
+            from referral_store import create_referral  # noqa: PLC0415
+            await create_referral(
+                db_url=_REFERRAL_DB_URL,
+                application_id=application.application_id,
+                tenant_id=tenant_id,
+                audit_log_id=response.audit_log_id,
+                pd_score=response.pd_score,
+                fraud_probability=response.fraud_probability,
+            )
+        except Exception as _ref_exc:
+            logger.warning("Failed to create referral entry: %s", _ref_exc)
         # Return 202 Accepted for manual review — requires custom response
-
         return JSONResponse(content=response.model_dump(), status_code=202)
     return response
 
@@ -2755,7 +2773,7 @@ class GeneratePackageRequest(BaseModel):
     components: List[str] = [
         "adverse_actions", "model_documentation", "policy_snapshots",
         "decision_samples", "fair_lending_analysis", "committee_approvals",
-        "data_lineage",
+        "data_lineage", "ai_agent_audit",
     ]
     format: Literal["json", "pdf_zip"] = "json"
     template: str = "OCC_EXAMINATION"
@@ -2763,22 +2781,25 @@ class GeneratePackageRequest(BaseModel):
 
 @app.post(
     "/v1/audit/generate-package",
-    summary="Generate a regulatory exam packet for the calling tenant",
+    summary="Generate a regulatory exam packet for the calling tenant (submits for HITL approval — PRD §11.3)",
     tags=["Audit"],
 )
 async def generate_audit_package(
     req: GeneratePackageRequest,
     payload: Dict = Depends(verify_bearer),
 ) -> Any:
-    """Build and return a regulatory exam packet.
+    """Build a regulatory exam packet and submit it for human approval (HITL gate).
 
-    ``format=json`` returns the packet as a JSON body.
-    ``format=pdf_zip`` returns the full packet rendered as a PDF byte stream.
+    Returns HTTP 202 with ``status="pending_approval"`` and a ``packet_id``.
+    The full packet payload is only accessible after a separate approver calls
+    ``POST /v1/audit/packets/{packet_id}/approve``.
     """
     import dataclasses as _dc  # noqa: PLC0415
     from compliance.exam_packet_builder import ExamPacketSpec, build_exam_packet  # noqa: PLC0415
+    from compliance.exam_packet_approval_store import submit_packet_for_approval  # noqa: PLC0415
 
     tenant_id = payload["tenant_id"]
+    generated_by = payload.get("sub") or payload.get("user_id", "unknown")
     spec = ExamPacketSpec(
         tenant_id=tenant_id,
         from_date=req.from_date,
@@ -2788,19 +2809,132 @@ async def generate_audit_package(
         template=req.template,
     )
     packet = await build_exam_packet(spec, DB_URL)
+    packet_json = _json_module.dumps(packet.to_dict())
 
-    if req.format == "pdf_zip":
-        from compliance.exam_packet_pdf import render_exam_packet_pdf  # noqa: PLC0415
+    await submit_packet_for_approval(
+        db_url=_APPROVAL_DB_URL,
+        packet_id=packet.packet_id,
+        tenant_id=tenant_id,
+        generated_by=generated_by,
+        packet_json=packet_json,
+    )
 
-        pdf_bytes = render_exam_packet_pdf(packet)
-        return Response(
-            content=pdf_bytes,
-            media_type="application/pdf",
-            headers={
-                "Content-Disposition": f"attachment; filename=exam_packet_{packet.packet_id}.pdf"
-            },
-        )
-    return packet.to_dict()
+    return JSONResponse(
+        content={
+            "packet_id": packet.packet_id,
+            "status": "pending_approval",
+            "message": (
+                "Exam packet generated and submitted for human approval. "
+                "A separate approver must call POST /v1/audit/packets/{packet_id}/approve "
+                "before the payload is accessible."
+            ),
+            "tenant_id": tenant_id,
+            "generated_by": generated_by,
+        },
+        status_code=202,
+    )
+
+
+@app.post(
+    "/v1/audit/packets/{packet_id}/approve",
+    summary="Approve a generated exam packet for export (HITL gate — PRD §11.3)",
+    tags=["Audit"],
+)
+async def approve_exam_packet(
+    packet_id: str,
+    notes: Optional[str] = Body(None),
+    _user: Dict = Depends(verify_bearer),
+) -> Any:
+    """Approve a pending exam packet. The approver must be a different user than the generator (SOD)."""
+    from compliance.exam_packet_approval_store import approve_packet  # noqa: PLC0415
+
+    reviewed_by = _user.get("sub") or _user.get("user_id", "unknown")
+    try:
+        record = await approve_packet(_APPROVAL_DB_URL, packet_id, reviewed_by, notes)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    return {
+        "packet_id": record.packet_id,
+        "status": record.status,
+        "reviewed_by": record.reviewed_by,
+        "reviewed_at": record.reviewed_at,
+        "review_notes": record.review_notes,
+    }
+
+
+@app.post(
+    "/v1/audit/packets/{packet_id}/reject",
+    summary="Reject a generated exam packet (HITL gate — PRD §11.3)",
+    tags=["Audit"],
+)
+async def reject_exam_packet(
+    packet_id: str,
+    notes: str = Body(..., min_length=10),
+    _user: Dict = Depends(verify_bearer),
+) -> Any:
+    """Reject a pending exam packet. review_notes are required (min 10 chars)."""
+    from compliance.exam_packet_approval_store import reject_packet  # noqa: PLC0415
+
+    reviewed_by = _user.get("sub") or _user.get("user_id", "unknown")
+    try:
+        record = await reject_packet(_APPROVAL_DB_URL, packet_id, reviewed_by, notes)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    return {
+        "packet_id": record.packet_id,
+        "status": record.status,
+        "reviewed_by": record.reviewed_by,
+        "reviewed_at": record.reviewed_at,
+        "review_notes": record.review_notes,
+    }
+
+
+@app.get(
+    "/v1/audit/packets/{packet_id}",
+    summary="Retrieve an approved exam packet payload",
+    tags=["Audit"],
+)
+async def get_exam_packet(
+    packet_id: str,
+    _user: Dict = Depends(verify_bearer),
+) -> Any:
+    """Return the full exam packet JSON. Only available once the packet is approved."""
+    from compliance.exam_packet_approval_store import get_approved_packet_json  # noqa: PLC0415
+
+    try:
+        json_str = await get_approved_packet_json(_APPROVAL_DB_URL, packet_id)
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    if json_str is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Packet {packet_id!r} not found.")
+    return _json_module.loads(json_str)
+
+
+@app.get(
+    "/v1/audit/packets/pending",
+    summary="List exam packets awaiting human approval",
+    tags=["Audit"],
+)
+async def list_pending_exam_packets(_user: Dict = Depends(verify_bearer)) -> Any:
+    """Return all exam packets in pending_approval state for the calling tenant."""
+    from compliance.exam_packet_approval_store import list_pending_packets  # noqa: PLC0415
+
+    tenant_id = _user["tenant_id"]
+    records = await list_pending_packets(_APPROVAL_DB_URL, tenant_id)
+    return [
+        {
+            "packet_id": r.packet_id,
+            "tenant_id": r.tenant_id,
+            "generated_by": r.generated_by,
+            "generated_at": r.generated_at,
+            "status": r.status,
+        }
+        for r in records
+    ]
 
 
 @app.get(
@@ -3336,6 +3470,53 @@ async def get_executive_summary(
 
 
 # ===========================================================================
+# Decision Mix Analytics (HITL vs. Automatic)
+# ===========================================================================
+
+@app.get(
+    "/v1/analytics/decision-mix",
+    summary="Automatic vs. HITL decision breakdown for a tenant and date range",
+    tags=["Analytics"],
+)
+async def decision_mix_report(
+    tenant_id: str = Query(..., description="Tenant ID to scope the report"),
+    from_date: str = Query(..., description="ISO-8601 start date inclusive, e.g. 2026-01-01"),
+    to_date: str = Query(..., description="ISO-8601 end date inclusive, e.g. 2026-03-31"),
+    payload: Dict = Depends(verify_bearer),
+) -> Dict:
+    """Returns automatic vs. HITL decision breakdown for a tenant and date range.
+
+    Fields returned:
+    - ``total_decisions``: total decisions in window
+    - ``automatic_approve``, ``automatic_reject``: auto-decision counts
+    - ``manual_review_enqueued``, ``manual_review_completed``, ``manual_review_sla_breached``
+    - ``override_approve``, ``override_reject``: analyst decision changes
+    - ``automatic_decision_rate``: fraction decided automatically
+    - ``hitl_rate``: fraction routed to human review
+    - ``hitl_override_reversal_rate``: fraction where analyst changed the model outcome
+    """
+    import dataclasses as _dc  # noqa: PLC0415
+    from decisioning.decision_metrics import get_decision_mix  # noqa: PLC0415
+
+    _review_db_url = os.getenv("REVIEW_QUEUE_DB_URL", DB_URL)
+    try:
+        report = await get_decision_mix(
+            tenant_id=tenant_id,
+            from_date=from_date,
+            to_date=to_date,
+            audit_db_url=DB_URL,
+            review_db_url=_review_db_url,
+        )
+    except Exception as exc:
+        logger.exception("Decision mix report failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Decision mix query error: {exc}",
+        )
+    return _dc.asdict(report)
+
+
+# ===========================================================================
 # Sprint 7-A — Multi-Product Policy Engine
 # ===========================================================================
 
@@ -3753,3 +3934,144 @@ async def list_feature_flags(
     from config_registry.tenant_branding import FEATURE_FLAG_CATALOGUE  # noqa: PLC0415
 
     return FEATURE_FLAG_CATALOGUE
+
+
+# ---------------------------------------------------------------------------
+# GAP-23 — Manual Review Referral Queue and Post-Decision Override API
+# ---------------------------------------------------------------------------
+
+class OverrideResolutionRequest(BaseModel):
+    referral_id: str
+    resolution: Literal["APPROVE", "REJECT", "CONDITIONAL"]
+    resolution_notes: str = Field(..., min_length=10)
+    approved_by: str  # four-eyes: must differ from JWT user
+    conditional_terms: Optional[Dict[str, Any]] = None
+
+
+@app.get(
+    "/v1/review/queue",
+    summary="List manual review referral queue for the calling tenant (GAP-23)",
+    tags=["Manual Review"],
+)
+async def get_referral_queue(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    _user: Dict = Depends(verify_bearer),
+) -> Any:
+    """Return the paginated referral queue for the calling tenant."""
+    from referral_store import get_queue  # noqa: PLC0415
+
+    tenant_id = _user["tenant_id"]
+    records, total = await get_queue(
+        _REFERRAL_DB_URL, tenant_id, status_filter=status_filter, page=page, per_page=per_page
+    )
+    return {
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "records": [
+            {
+                "referral_id": r.referral_id,
+                "application_id": r.application_id,
+                "tenant_id": r.tenant_id,
+                "status": r.status,
+                "created_at": r.created_at,
+                "sla_deadline": r.sla_deadline,
+                "claimed_by": r.claimed_by,
+                "pd_score": r.pd_score,
+                "fraud_probability": r.fraud_probability,
+            }
+            for r in records
+        ],
+    }
+
+
+@app.post(
+    "/v1/review/{referral_id}/claim",
+    summary="Claim a pending referral for manual review (GAP-23)",
+    tags=["Manual Review"],
+)
+async def claim_referral_endpoint(
+    referral_id: str,
+    _user: Dict = Depends(verify_bearer),
+) -> Any:
+    """Claim a pending referral so the calling loan officer is the assigned reviewer."""
+    from referral_store import claim_referral  # noqa: PLC0415
+
+    claimed_by = _user.get("sub") or _user.get("user_id", "unknown")
+    try:
+        record = await claim_referral(_REFERRAL_DB_URL, referral_id, claimed_by)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
+    return {
+        "referral_id": record.referral_id,
+        "status": record.status,
+        "claimed_by": record.claimed_by,
+        "claimed_at": record.claimed_at,
+    }
+
+
+@app.post(
+    "/v1/decisions/{application_id}/override",
+    summary="Submit a post-decision override for a MANUAL_REVIEW application (GAP-23)",
+    tags=["Manual Review"],
+)
+async def post_decision_override(
+    application_id: str,
+    req: OverrideResolutionRequest,
+    _user: Dict = Depends(verify_bearer),
+) -> Any:
+    """Resolve a manual review referral with four-eyes override approval.
+
+    ``resolved_by`` is extracted from the calling user's JWT.
+    ``approved_by`` is supplied in the request body and must differ (four-eyes rule).
+    """
+    from referral_store import get_queue, resolve_referral  # noqa: PLC0415
+
+    resolved_by = _user.get("sub") or _user.get("user_id", "unknown")
+    tenant_id = _user["tenant_id"]
+
+    # Find the referral for this application
+    records, _ = await get_queue(_REFERRAL_DB_URL, tenant_id)
+    referral = next(
+        (r for r in records if r.application_id == application_id
+         and r.referral_id == req.referral_id),
+        None,
+    )
+    if referral is None:
+        # Try by referral_id alone in case tenant match differs
+        all_pages, _ = await get_queue(_REFERRAL_DB_URL, tenant_id, per_page=500)
+        referral = next((r for r in all_pages if r.referral_id == req.referral_id), None)
+    if referral is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No referral {req.referral_id!r} found for application {application_id!r}.",
+        )
+
+    try:
+        record = await resolve_referral(
+            db_url=_REFERRAL_DB_URL,
+            referral_id=req.referral_id,
+            resolved_by=resolved_by,
+            resolution=req.resolution,
+            resolution_notes=req.resolution_notes,
+            approved_by=req.approved_by,
+            conditional_terms=req.conditional_terms,
+        )
+    except PermissionError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+
+    return {
+        "referral_id": record.referral_id,
+        "application_id": record.application_id,
+        "status": record.status,
+        "resolution": record.resolution,
+        "resolved_by": record.resolved_by,
+        "resolved_at": record.resolved_at,
+        "approved_by": record.approved_by,
+        "override_id": record.override_id,
+        "conditional_terms": record.conditional_terms,
+    }

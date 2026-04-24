@@ -1686,7 +1686,7 @@ Each phase delivers a complete, shippable product. Phase 1 delivers immediate co
       "row_count": 4200,
       "executed_at": "2026-04-15T09:32:11Z",
       "storage_uri": "s3://ilol-code-artifacts/qry_20260415_001/step1.sql",
-      "sha256": "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"
+      "sha256": "7f83b1657ff1fc53b92dc18148a1d65dfc2d4b1fa3d677284addd200126d9069"  # pragma: allowlist secret
     },
     {
       "step": 2,
@@ -1694,7 +1694,7 @@ Each phase delivers a complete, shippable product. Phase 1 delivers immediate co
       "label": "YoY delta computation and PSI calculation",
       "code": "import pandas as pd\nq1_2025 = df[df['qtr']=='2025-01-01']['approval_rate'].iloc[0]\nq1_2026 = df[df['qtr']=='2026-01-01']['approval_rate'].iloc[0]\ndelta_pp = (q1_2026 - q1_2025) * 100  # Result: -8.2",
       "storage_uri": "s3://ilol-code-artifacts/qry_20260415_001/step2.py",
-      "sha256": "3d7e9f2a1b4c8e5f6d0a2c9b7e4f1d3a8c5b2e9f7d4a1c6b3e8f5d2a9c7b4e"
+      "sha256": "3d7e9f2a1b4c8e5f6d0a2c9b7e4f1d3a8c5b2e9f7d4a1c6b3e8f5d2a9c7b4e"  # pragma: allowlist secret
     }
   ],
   "code_export_url": "s3://ilol-code-artifacts/qry_20260415_001/code_archive.zip",
