@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
+import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -56,6 +58,7 @@ _CANONICAL_FIELDS = {
         "form_type",
         "reason_codes",
     ),
+    "ai_agent_audit_log": ("query_text", "result_hash", "confidence_score", "answer_text"),
 }
 
 
@@ -218,6 +221,166 @@ async def verify_chain(
         first_tampered_log_id=None,
         first_tampered_at=None,
         gap_detected=gap_detected,
+    )
+
+
+# ---------------------------------------------------------------------------
+# AI Agent audit log chain verifier (sqlite3, not SQLAlchemy)
+# ---------------------------------------------------------------------------
+
+AI_CANONICAL_FIELDS = ("query_text", "result_hash", "confidence_score", "answer_text")
+
+
+def _rebuild_ai_canonical(row: dict) -> str:
+    payload = {
+        "log_id": row.get("log_id"),
+        "logged_at": row.get("logged_at"),
+        "query_text": row.get("query_text"),
+        "result_hash": row.get("result_hash"),
+        "confidence_score": row.get("confidence_score"),
+        "answer_text": row.get("answer_text"),
+    }
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+
+def _recompute_ai_hash(row: dict) -> str:
+    previous_hash = row.get("previous_hash") or "GENESIS"
+    log_id = row.get("log_id", "")
+    logged_at = row.get("logged_at", "")
+    canonical = _rebuild_ai_canonical(row)
+    raw = previous_hash + "|" + log_id + "|" + logged_at + "|" + canonical
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _sync_verify_ai_chain(
+    db_path: str,
+    session_id: Optional[str],
+    from_logged_at: Optional[str],
+    to_logged_at: Optional[str],
+) -> ChainVerificationResult:
+    try:
+        try:
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro&uri=true", uri=True)
+        except Exception:
+            conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+    except Exception as exc:
+        return ChainVerificationResult(
+            verified=False,
+            rows_checked=0,
+            first_tampered_log_id=None,
+            first_tampered_at=None,
+            gap_detected=False,
+        )
+
+    try:
+        query = "SELECT * FROM ai_agent_audit_log WHERE 1=1"
+        params: list = []
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if from_logged_at:
+            query += " AND logged_at >= ?"
+            params.append(from_logged_at)
+        if to_logged_at:
+            query += " AND logged_at <= ?"
+            params.append(to_logged_at)
+        query += " ORDER BY logged_at ASC, log_id ASC"
+
+        rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+    except Exception:
+        conn.close()
+        return ChainVerificationResult(
+            verified=True,
+            rows_checked=0,
+            first_tampered_log_id=None,
+            first_tampered_at=None,
+            gap_detected=False,
+        )
+    finally:
+        conn.close()
+
+    if not rows:
+        return ChainVerificationResult(
+            verified=True,
+            rows_checked=0,
+            first_tampered_log_id=None,
+            first_tampered_at=None,
+            gap_detected=False,
+        )
+
+    all_record_hashes = {r.get("record_hash") for r in rows if r.get("record_hash")}
+    rows_checked = 0
+    gap_detected = False
+    running_previous: Optional[str] = None
+
+    for row in rows:
+        stored_hash = row.get("record_hash")
+        if stored_hash is None:
+            rows_checked += 1
+            continue
+
+        log_id = row.get("log_id", "")
+        logged_at = row.get("logged_at", "")
+        stored_previous = row.get("previous_hash") or ""
+
+        if running_previous is not None:
+            if stored_previous != running_previous:
+                if stored_previous not in all_record_hashes:
+                    gap_detected = True
+                return ChainVerificationResult(
+                    verified=False,
+                    rows_checked=rows_checked,
+                    first_tampered_log_id=str(log_id),
+                    first_tampered_at=str(logged_at),
+                    gap_detected=gap_detected,
+                )
+
+        recomputed = _recompute_ai_hash(row)
+        if recomputed != stored_hash:
+            return ChainVerificationResult(
+                verified=False,
+                rows_checked=rows_checked,
+                first_tampered_log_id=str(log_id),
+                first_tampered_at=str(logged_at),
+                gap_detected=gap_detected,
+            )
+
+        running_previous = stored_hash
+        rows_checked += 1
+
+    return ChainVerificationResult(
+        verified=True,
+        rows_checked=rows_checked,
+        first_tampered_log_id=None,
+        first_tampered_at=None,
+        gap_detected=gap_detected,
+    )
+
+
+async def verify_ai_agent_chain(
+    db_url: str,
+    session_id: Optional[str] = None,
+    from_logged_at: Optional[str] = None,
+    to_logged_at: Optional[str] = None,
+) -> ChainVerificationResult:
+    """
+    Verify the hash chain of ai_agent_audit_log using sqlite3.
+
+    Parameters
+    ----------
+    db_url:
+        Path to the SQLite file or bare filename (strip \"sqlite:///\" prefix if present).
+    session_id:
+        If provided, scope verification to this session.
+    from_logged_at / to_logged_at:
+        ISO-8601 UTC date-time window (inclusive). None means unbounded.
+
+    Returns ChainVerificationResult with the same semantics as verify_chain().
+    """
+    db_path = db_url[len("sqlite:///"):] if db_url.startswith("sqlite:///") else db_url
+    return await asyncio.to_thread(
+        _sync_verify_ai_chain, db_path, session_id, from_logged_at, to_logged_at
     )
 
 

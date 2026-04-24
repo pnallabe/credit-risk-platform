@@ -213,6 +213,64 @@ def _render_with_reportlab(packet: "ExamPacket") -> bytes:
                 )
             )
 
+        elif comp.name == "ai_agent_audit" and comp.status == "complete" and comp.data:
+            d = comp.data
+            # Summary statistics table
+            story.append(Paragraph("AI Agent Audit Summary (GNRI-011)", styles["Heading3"]))
+            summary_data = [
+                ["Metric", "Value"],
+                ["Total Queries", str(d.get("total_queries", 0))],
+                ["Unique Sessions", str(d.get("unique_sessions", 0))],
+                ["Grounded Answers", str(d.get("grounded_count", 0))],
+                ["Grounding Rate", f"{d.get('grounding_rate_pct', 0.0):.2f}%"],
+                ["Avg Confidence Score", str(d.get("avg_confidence_score", "N/A"))],
+                ["Min Confidence Score", str(d.get("min_confidence_score", "N/A"))],
+                ["Period", f"{d.get('from_date', '')} – {d.get('to_date', '')}"],
+            ]
+            chain_info = d.get("chain_verification", {})
+            summary_data.append(["Chain Integrity", chain_info.get("status", "unknown").upper()])
+            summary_data.append(["Chain Rows Checked", str(chain_info.get("rows_checked", 0))])
+            if chain_info.get("first_tampered_log_id"):
+                summary_data.append(["First Tampered Log ID", str(chain_info["first_tampered_log_id"])])
+
+            ai_table = Table(summary_data, colWidths=[8 * cm, 8 * cm])
+            ai_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2d3748")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ]))
+            story.append(ai_table)
+            story.append(Spacer(1, 0.2 * cm))
+
+            # Confidence label distribution
+            label_dist = d.get("confidence_label_distribution", {})
+            if label_dist:
+                story.append(Paragraph("Confidence Label Distribution", styles["Heading3"]))
+                label_data = [["Label", "Count"]] + [
+                    [lbl, str(cnt)] for lbl, cnt in sorted(label_dist.items())
+                ]
+                lt = Table(label_data, colWidths=[8 * cm, 8 * cm])
+                lt.setStyle(TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4a5568")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTSIZE", (0, 0), (-1, -1), 9),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f7fafc")]),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]))
+                story.append(lt)
+            story.append(Spacer(1, 0.3 * cm))
+
         else:  # stub
             story.append(
                 Paragraph(

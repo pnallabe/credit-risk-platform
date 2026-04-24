@@ -805,3 +805,265 @@ These gaps did not exist in PRD v1.0. They arise from Module 6 (RAG-Powered AI A
 ---
 
 *For implementation coding prompts for GAP-19 through GAP-23, see [`docs/IMPLEMENTATION_PLAN_GAP19_20_21.md`](IMPLEMENTATION_PLAN_GAP19_20_21.md). For the unified PRD driving this audit, see [`docs/Unified_ILOL_PRD.md`](Unified_ILOL_PRD.md).*
+
+---
+
+## Part C — HITL Decision Audit (2026-04-16 Addendum)
+
+> Produced by the Userflow & Decision Diagram Audit (see `docs/USERFLOW_DECISION_DIAGRAM_AUDIT_PROMPT.md`).
+> Covers H-01 through H-10 from the HITL gap checklist.
+
+---
+
+#### GAP-H01: `assign_to_analyst()` Method Name Mismatch — ⚠️ PARTIAL
+**PRD Reference**: §4.6 Human-In-The-Loop Review Queue
+**Severity**: P3
+**Regulatory Driver**: OCC 2021-25 model risk guidance — human override accountability
+
+**PRD Requirement**:
+> "Every MANUAL_REVIEW item shall be assignable to a named analyst. Assignment must be logged with start time."
+
+**Current State**:
+- `ReviewQueue.assign(item_id, reviewer_id)` is present and fully functional (`decisioning/review_queue.py`).
+- Sets `status=UNDER_REVIEW`, `assigned_to`, and `review_started_at`.
+- Method is named `assign()` not `assign_to_analyst()` as referenced in the PRD checklist.
+
+**Remediation**:
+1. Rename or alias the method to `assign_to_analyst()` for PRD conformance.
+2. Update any callers (currently no callers found in production code outside tests).
+
+---
+
+#### GAP-H02: `complete()` Does Not Enforce Non-Null `override_reason_code` — ⚠️ OPEN
+**PRD Reference**: §4.6 Human-In-The-Loop Review Queue, §9.3 Audit Trail
+**Severity**: P2
+**Regulatory Driver**: FCRA §615(a) — basis for adverse action must be documented; OCC 2021-25
+
+**PRD Requirement**:
+> "Every completed review item must record a non-null reason code from the `ReviewReasonCode` enum."
+
+**Current State**:
+- `ReviewQueue.complete()` accepts `override_reason_code: str` but performs no null/empty check.
+- An analyst can call `complete(item_id, override_decision="APPROVE", override_reason_code="")` and the row is written without validation error.
+
+**Remediation**:
+1. Add guard at top of `complete()`:
+   ```python
+   if not override_reason_code or str(override_reason_code).strip() == "":
+       raise ValueError("override_reason_code must be non-null and non-empty")
+   valid_codes = {rc.value for rc in ReviewReasonCode}
+   if str(override_reason_code) not in valid_codes:
+       raise ValueError(f"override_reason_code must be one of {sorted(valid_codes)}")
+   ```
+2. Add test: `test_complete_rejects_null_reason_code()`.
+
+---
+
+#### GAP-H03: `check_sla_breaches()` Exists But Is Not Scheduled — ⚠️ PARTIAL
+**PRD Reference**: §4.6.3 SLA Monitoring
+**Severity**: P2
+**Regulatory Driver**: UDAAP — unreasonable delay in credit decision; ECOA 30-day clock
+
+**PRD Requirement**:
+> "SLA breach detection shall run automatically on a scheduled basis. Breached items must be escalated without manual intervention."
+
+**Current State**:
+- `ReviewQueue.check_sla_breaches()` is fully implemented (`decisioning/review_queue.py`).
+- No scheduler in `orchestration/`, `scripts/`, or `decision-api/src/main.py` calls this method.
+- SLA breaches only detected when explicitly called — no automated alerting.
+
+**Remediation**:
+1. Add an APScheduler or Celery beat job in `decision-api/src/main.py` startup (lifespan event):
+   ```python
+   from apscheduler.schedulers.asyncio import AsyncIOScheduler
+   scheduler = AsyncIOScheduler()
+   scheduler.add_job(lambda: review_queue.check_sla_breaches(), "interval", minutes=30)
+   ```
+2. Emit a metric/alert to `monitoring/` on any newly breached items.
+
+---
+
+#### GAP-H04: Analyst Assignment Has No RBAC Enforcement — ⚠️ OPEN
+**PRD Reference**: §9.2 RBAC Matrix, §4.6.2 Queue Assignment Controls
+**Severity**: P2
+**Regulatory Driver**: OCC 2021-25 §IV.C — access controls for model override actions
+
+**PRD Requirement**:
+> "Only users with role `analyst` or `supervisor` may claim and complete review queue items."
+
+**Current State**:
+- `ReviewQueue.assign()` and `complete()` accept any `reviewer_id` string — no JWT role validation.
+- `compliance/rbac.py` has a `FOUR_EYES_RULES` registry and `validate_override_submission()` but these are not wired into the review queue methods.
+
+**Remediation**:
+1. Expose HITL assignment/completion as API endpoints (alongside GAP-H09 / GAP-23 remediation).
+2. Apply `Depends(require_role(["analyst", "supervisor"]))` on the assign endpoint.
+3. Apply `Depends(require_role(["analyst", "supervisor"]))` on the complete endpoint.
+
+---
+
+#### GAP-H05: HITL Override Not Written to `policy_overrides_log` — ⚠️ OPEN
+**PRD Reference**: §8.3 Audit Trail Requirements, §3.1 Override Governance
+**Severity**: P1
+**Regulatory Driver**: OCC 2021-25 model risk — all model output overrides must be immutably logged; FFIEC IT audit standards
+
+**PRD Requirement**:
+> "All manual overrides of model recommendations must be logged to the immutable `policy_overrides_log` table with the four-eyes record."
+
+**Current State**:
+- `ReviewQueue.complete()` writes only to the `review_queue` table.
+- No call to `audit.override_log.log_override()` or `PolicyOverrideRecord` creation in `complete()` or any caller.
+- `policy_overrides_log` table (immutable, hash-chained) exists and is used for threshold overrides from `make_decision()` — but analyst queue overrides bypass it entirely.
+
+**Remediation**:
+1. After writing the override to `review_queue`, call `audit.override_log.log_override()`:
+   ```python
+   from audit.override_log import PolicyOverrideRecord, log_override
+   record = PolicyOverrideRecord(
+       override_id=str(uuid.uuid4()),
+       decision_id=item.application_id,
+       tenant_id=tenant_id,
+       override_type="hitl_analyst_override",
+       original_value=0.0,
+       override_value=0.0,
+       justification=notes or override_reason_code,
+       submitted_by=analyst_email,
+       approved_by=analyst_email,   # until H-10 is remediated
+       approved_at=completed_at.isoformat(),
+   )
+   await log_override(record, audit_db_url)
+   ```
+2. Add test verifying `policy_overrides_log` entry is created on `complete()`.
+
+---
+
+#### GAP-H06: Adverse Action Notice Not Generated on Analyst `override_decision=DECLINE` — ⚠️ OPEN
+**PRD Reference**: §4.5 Adverse Action Management, §8.1 ECOA / Reg B Compliance
+**Severity**: P1
+**Regulatory Driver**: 12 CFR §1002.9 — 30-day notice clock applies to all final rejections including post-HITL
+
+**PRD Requirement**:
+> "A Reg B–compliant adverse action notice must be generated and delivered within 30 days of any final rejection, including analyst overrides."
+
+**Current State**:
+- `_run_pipeline()` in `decision-api/src/main.py` generates a Reg B notice on automatic REJECT outcomes.
+- No adverse action notice is triggered when an analyst sets `override_decision="DECLINE"` in `ReviewQueue.complete()`.
+- The 30-day clock for applicants whose items are reviewed and declined by a human starts — and is missed.
+
+**Remediation**:
+1. Add adverse action trigger in the HITL completion API endpoint (to be created as part of GAP-23):
+   ```python
+   if completed_item.override_decision == "DECLINE":
+       notice = generate_notice(decision_result, applicant_info)
+       await save_notice(notice, db_url=DB_URL)
+   ```
+2. Add test: `test_analyst_decline_triggers_adverse_action_notice()`.
+
+---
+
+#### GAP-H07: No Escalation Path from `SLA_BREACHED` to Supervisor Re-Assignment — ⚠️ OPEN
+**PRD Reference**: §4.6.3 SLA Escalation
+**Severity**: P2
+**Regulatory Driver**: UDAAP — undue processing delays; ECOA 30-day clock
+
+**PRD Requirement**:
+> "Items in SLA_BREACHED status must be automatically escalated to a supervisor queue for re-assignment."
+
+**Current State**:
+- `ReviewQueue` has no `escalate()` or supervisor re-assignment method.
+- Once an item is `SLA_BREACHED`, it can only be manually re-assigned by directly calling `assign()` — no automated escalation path exists.
+- The state diagram in `docs/diagrams/hitl_review_queue_lifecycle.md` shows this gap explicitly.
+
+**Remediation**:
+1. Add `escalate(item_id, supervisor_email)` method to `ReviewQueue` that transitions `SLA_BREACHED → UNDER_REVIEW` with supervisor assignment.
+2. Wire into the scheduled `check_sla_breaches()` job (GAP-H03) to auto-escalate immediately on breach.
+3. Emit a notification/webhook event on escalation.
+
+---
+
+#### GAP-H08: HITL Metrics Not Surfaced in Monitoring Dashboard — ⚠️ PARTIAL
+**PRD Reference**: §5.3 Operational Monitoring, §4.6.4 Queue Metrics
+**Severity**: P3
+**Regulatory Driver**: OCC 2021-25 — ongoing monitoring of model override rates
+
+**PRD Requirement**:
+> "The monitoring dashboard shall display HITL queue depth, SLA breach rate, analyst completion rate, and override reversal rate."
+
+**Current State**:
+- `GET /v1/analytics/decision-mix` endpoint implemented (2026-04-16) via `decisioning/decision_metrics.py`. Returns `hitl_rate`, `manual_review_sla_breached`, `hitl_override_reversal_rate`. ✅
+- `monitoring/` directory has no HITL-specific metric emitters or dashboard widgets.
+- `analytics_api/` does not expose review queue metrics.
+- No queue depth or SLA breach rate charts in `dashboard/app.py`.
+
+**Remediation**:
+1. Add HITL metric gauges to `monitoring/` (queue depth, SLA breach count, completion rate).
+2. Add a Plotly graph in `dashboard/app.py` for HITL queue status over time.
+
+---
+
+#### GAP-H09: `configure_review_queue()` Not Called at App Startup — 🔴 OPEN
+**PRD Reference**: §4.6 Human-In-The-Loop Review Queue, §7.2 Service Startup
+**Severity**: P1
+**Regulatory Driver**: OCC 2021-25 — HITL gate must be operational; ECOA / UDAAP — all flagged applications must reach a human reviewer
+
+**PRD Requirement**:
+> "The review queue must be initialised and wired at service startup. MANUAL_REVIEW outcomes must always result in a queue entry being created."
+
+**Current State**:
+- `decision_engine/cc_origination_policy.py` has `_REVIEW_QUEUE: Optional[ReviewQueue] = None`.
+- `configure_review_queue()` sets this module-level reference.
+- `decision-api/src/main.py` **never calls** `configure_review_queue()` — confirmed by grep (no matches).
+- When `_REVIEW_QUEUE is None`, the `evaluate_application()` path silently skips the enqueue with only a `logging.warning`.
+- Result: in production, all MANUAL_REVIEW outcomes from the CC policy engine are silently discarded — no queue entries, no SLA clocks, no analyst assignments.
+
+**Remediation**:
+1. Add to `decision-api/src/main.py` lifespan startup:
+   ```python
+   from decisioning.review_queue import ReviewQueue
+   from decision_engine.cc_origination_policy import configure_review_queue
+   _review_queue = ReviewQueue(db_url=os.getenv("REVIEW_QUEUE_DB_URL", DB_URL))
+   configure_review_queue(_review_queue)
+   ```
+2. Change the silent `except Exception: log.warning(...)` in `evaluate_application()` to re-raise after logging, so startup failures are visible.
+3. Add integration test verifying `_REVIEW_QUEUE` is not `None` after app startup.
+
+---
+
+#### GAP-H10: Second-Approver Check Absent on Analyst Queue Overrides — ⚠️ PARTIAL
+**PRD Reference**: §9.2 Four-Eyes Principle, §3.1 Override Governance
+**Severity**: P2
+**Regulatory Driver**: OCC 2021-25 §IV.C — separation of duties for model output overrides; SOC 2 CC6.3
+
+**PRD Requirement**:
+> "All manual overrides of automated credit decisions require four-eyes sign-off: the person submitting the override must differ from the person approving it."
+
+**Current State**:
+- `make_decision()` in `engine.py` enforces four-eyes via `compliance/rbac.validate_override_submission()` for threshold policy overrides. ✅ Present for threshold changes.
+- `ReviewQueue.complete()` takes a single `reviewer_id` with no second-approver field. No SOD check.
+- Analyst queue overrides (the most common override path for borderline applications) bypass the four-eyes control entirely.
+
+**Remediation**:
+1. Add `approved_by: str` parameter to `ReviewQueue.complete()`.
+2. Enforce `submitted_by != approved_by` (analogous to `validate_override_submission()`).
+3. Store `approved_by` in the `review_queue` schema (new column) and in the `policy_overrides_log` entry (GAP-H05).
+4. Update API endpoint for queue completion to require two separate authenticated calls or a second-approver token.
+
+---
+
+### Summary Table — HITL Gaps (H-01 through H-10)
+
+| Gap ID | Control | Severity | Status |
+|--------|---------|:--------:|:------:|
+| GAP-H01 | `assign_to_analyst()` method name | P3 | Partial |
+| GAP-H02 | Non-null `override_reason_code` validation | P2 | 🔴 Open |
+| GAP-H03 | `check_sla_breaches()` scheduled job | P2 | Partial |
+| GAP-H04 | RBAC enforcement on queue assignment/completion | P2 | 🔴 Open |
+| GAP-H05 | Override written to `policy_overrides_log` | P1 | 🔴 Open |
+| GAP-H06 | Adverse action notice on analyst DECLINE | P1 | 🔴 Open |
+| GAP-H07 | SLA escalation path to supervisor | P2 | 🔴 Open |
+| GAP-H08 | HITL metrics in monitoring dashboard | P3 | Partial |
+| GAP-H09 | `configure_review_queue()` at startup | P1 | 🔴 Open |
+| GAP-H10 | Four-eyes on analyst queue overrides | P2 | Partial |
+
+**P1 open**: GAP-H05, GAP-H06, GAP-H09 — must be resolved before production HITL is live.
+**P2 open**: GAP-H02, GAP-H04, GAP-H07, GAP-H10 — required for regulatory examination readiness.

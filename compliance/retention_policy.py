@@ -68,6 +68,7 @@ RETENTION_SCHEDULE: dict[str, Optional[int]] = {
     "audit.adverse_action_notice_queue": 7,
     "audit.portfolio_audit_log": 7,
     "audit.access_event_log": 7,
+    "audit.ai_agent_audit_log": 7,  # GNRI-011 — 7-year retention; OCC 2021-25
     "compliance_data_plane.compliance_events": 7,
     "compliance_data_plane.consent_and_disclosures": 7,
     "compliance_data_plane.compliance_health_score_log": 7,
