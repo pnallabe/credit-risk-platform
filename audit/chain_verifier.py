@@ -252,19 +252,51 @@ def _recompute_ai_hash(row: dict) -> str:
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def _sync_verify_ai_chain(
-    db_path: str,
-    session_id: Optional[str],
-    from_logged_at: Optional[str],
-    to_logged_at: Optional[str],
+async def verify_ai_agent_chain(
+    db_url: str,
+    session_id: Optional[str] = None,
+    from_logged_at: Optional[str] = None,
+    to_logged_at: Optional[str] = None,
 ) -> ChainVerificationResult:
+    """Verify the hash chain of ai_agent_audit_log.
+
+    OV-02: Uses SQLAlchemy async engine (PostgreSQL via asyncpg).
+
+    Parameters
+    ----------
+    db_url:
+        SQLAlchemy async URL (``postgresql+asyncpg://...``).
+    session_id:
+        If provided, scope verification to this session.
+    from_logged_at / to_logged_at:
+        ISO-8601 UTC date-time window (inclusive). None means unbounded.
+
+    Returns ChainVerificationResult with the same semantics as verify_chain().
+    """
+    engine = _get_engine(db_url)
+
+    where_clauses: list[str] = []
+    params: dict[str, Any] = {}
+    if session_id:
+        where_clauses.append("session_id = :session_id")
+        params["session_id"] = session_id
+    if from_logged_at:
+        where_clauses.append("logged_at >= :from_ts")
+        params["from_ts"] = from_logged_at
+    if to_logged_at:
+        where_clauses.append("logged_at <= :to_ts")
+        params["to_ts"] = to_logged_at
+
+    where_str = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+    query = text(
+        f"SELECT * FROM ai_agent_audit_log{where_str} ORDER BY logged_at ASC, log_id ASC"
+    )
+
     try:
-        try:
-            conn = sqlite3.connect(f"file:{db_path}?mode=ro&uri=true", uri=True)
-        except Exception:
-            conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-    except Exception as exc:
+        async with engine.connect() as conn:
+            result = await conn.execute(query, params)
+            rows = [dict(r) for r in result.mappings().fetchall()]
+    except Exception:
         return ChainVerificationResult(
             verified=False,
             rows_checked=0,
@@ -272,33 +304,6 @@ def _sync_verify_ai_chain(
             first_tampered_at=None,
             gap_detected=False,
         )
-
-    try:
-        query = "SELECT * FROM ai_agent_audit_log WHERE 1=1"
-        params: list = []
-        if session_id:
-            query += " AND session_id = ?"
-            params.append(session_id)
-        if from_logged_at:
-            query += " AND logged_at >= ?"
-            params.append(from_logged_at)
-        if to_logged_at:
-            query += " AND logged_at <= ?"
-            params.append(to_logged_at)
-        query += " ORDER BY logged_at ASC, log_id ASC"
-
-        rows = [dict(r) for r in conn.execute(query, params).fetchall()]
-    except Exception:
-        conn.close()
-        return ChainVerificationResult(
-            verified=True,
-            rows_checked=0,
-            first_tampered_log_id=None,
-            first_tampered_at=None,
-            gap_detected=False,
-        )
-    finally:
-        conn.close()
 
     if not rows:
         return ChainVerificationResult(
@@ -355,32 +360,6 @@ def _sync_verify_ai_chain(
         first_tampered_log_id=None,
         first_tampered_at=None,
         gap_detected=gap_detected,
-    )
-
-
-async def verify_ai_agent_chain(
-    db_url: str,
-    session_id: Optional[str] = None,
-    from_logged_at: Optional[str] = None,
-    to_logged_at: Optional[str] = None,
-) -> ChainVerificationResult:
-    """
-    Verify the hash chain of ai_agent_audit_log using sqlite3.
-
-    Parameters
-    ----------
-    db_url:
-        Path to the SQLite file or bare filename (strip \"sqlite:///\" prefix if present).
-    session_id:
-        If provided, scope verification to this session.
-    from_logged_at / to_logged_at:
-        ISO-8601 UTC date-time window (inclusive). None means unbounded.
-
-    Returns ChainVerificationResult with the same semantics as verify_chain().
-    """
-    db_path = db_url[len("sqlite:///"):] if db_url.startswith("sqlite:///") else db_url
-    return await asyncio.to_thread(
-        _sync_verify_ai_chain, db_path, session_id, from_logged_at, to_logged_at
     )
 
 

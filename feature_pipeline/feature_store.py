@@ -37,7 +37,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from sqlalchemy import text
+from sqlalchemy import text, bindparam
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from feature_pipeline.features import FeaturePipelineConfig
@@ -402,8 +402,11 @@ async def read_features_as_of(
 
     async with engine.begin() as conn:
         if dialect_name == "sqlite":
-            params["app_ids"] = tuple(application_ids)
-            result = await conn.execute(text(select_sql), params)
+            params["app_ids"] = list(application_ids)
+            result = await conn.execute(
+                text(select_sql).bindparams(bindparam("app_ids", expanding=True)),
+                params,
+            )
         else:
             params["app_ids"] = application_ids
             result = await conn.execute(text(select_sql), params)

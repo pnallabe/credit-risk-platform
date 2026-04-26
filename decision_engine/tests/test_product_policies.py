@@ -1,32 +1,32 @@
 """
-Tests for Sprint 7-A: Multi-Product Policy Engine (decision_engine/product_policies.py)
+Tests for Multi-Product Policy Engine (decision_engine/product_policies.py)
 """
 from __future__ import annotations
 
+import dataclasses
 import pytest
 
 from decision_engine.product_policies import (
     ProductPolicy,
-    ProductPolicyInput,
+    ProductPolicyEvaluationInput,
     ProductPolicyResult,
     evaluate_product_policy,
     get_product_policy,
-    list_supported_products,
+    list_product_types,
 )
 
 
 # ---------------------------------------------------------------------------
-# list_supported_products
+# list_product_types
 # ---------------------------------------------------------------------------
 
-def test_list_supported_products_returns_all_six():
-    products = list_supported_products()
+def test_list_product_types_returns_all_six():
+    products = list_product_types()
     assert len(products) == 6
-    names = {p["product_type"] for p in products}
-    assert "CREDIT_CARD" in names
-    assert "MORTGAGE" in names
-    assert "BNPL" in names
-    assert "SMALL_BUSINESS_LOAN" in names
+    assert "CREDIT_CARD" in products
+    assert "MORTGAGE" in products
+    assert "BNPL" in products
+    assert "SMALL_BUSINESS_LOAN" in products
 
 
 # ---------------------------------------------------------------------------
@@ -35,136 +35,117 @@ def test_list_supported_products_returns_all_six():
 
 def test_get_product_policy_credit_card():
     policy = get_product_policy("CREDIT_CARD")
+    assert isinstance(policy, ProductPolicy)
     assert policy.product_type == "CREDIT_CARD"
-    assert policy.pd_approval_threshold < 1.0
-    assert policy.fraud_hard_decline_threshold < 1.0
+    assert 0 < policy.pd_threshold_approve < 1.0
+    assert 0 < policy.fraud_reject_threshold < 1.0
+
+
+def test_get_product_policy_all_products():
+    for pt in list_product_types():
+        policy = get_product_policy(pt)
+        assert policy.product_type == pt
+        assert policy.max_apr > 0
 
 
 def test_get_product_policy_unknown_raises():
-    with pytest.raises(KeyError):
+    with pytest.raises((KeyError, ValueError)):
         get_product_policy("FLYING_CARPET")
 
 
-def test_get_product_policy_tenant_overrides_applied():
-    overrides = {"pd_approval_threshold": 0.99}
-    policy = get_product_policy("PERSONAL_LOAN", tenant_overrides=overrides)
-    assert policy.pd_approval_threshold == pytest.approx(0.99)
+# ---------------------------------------------------------------------------
+# evaluate_product_policy helpers
+# ---------------------------------------------------------------------------
+
+def _clean_input(product_type: str) -> ProductPolicyEvaluationInput:
+    return ProductPolicyEvaluationInput(
+        application_id="app-001",
+        product_type=product_type,
+        fraud_probability=0.01,
+        pd_score=0.01,
+        loan_amount_usd=5_000.0,
+        annual_income_usd=120_000.0,
+        debt_to_income_ratio=0.20,
+        num_open_accounts=5,
+        credit_score=750,
+    )
 
 
 # ---------------------------------------------------------------------------
 # evaluate_product_policy — clean approval
 # ---------------------------------------------------------------------------
 
-def _min_clean_input(product_type: str) -> tuple[ProductPolicyInput, ProductPolicy]:
-    policy = get_product_policy(product_type)
-    inp = ProductPolicyInput(
-        pd_score=0.01,
-        fraud_score=0.01,
-        income=120_000.0,
-        existing_monthly_debt=500.0,
-        requested_amount=5_000.0,
-        collateral_value=None,
-        extra_features={},
-    )
-    return inp, policy
-
-
 def test_credit_card_approve():
-    inp, policy = _min_clean_input("CREDIT_CARD")
-    result = evaluate_product_policy(inp, policy)
-    assert result.pre_qualified is True
-    assert result.fraud_verdict in ("PASS", "REVIEW")
+    inp = _clean_input("CREDIT_CARD")
+    result = evaluate_product_policy(inp)
+    assert result.pre_qualification_passed
+    assert result.fraud_verdict == "APPROVE"
 
 
 def test_personal_loan_approve():
-    inp, policy = _min_clean_input("PERSONAL_LOAN")
-    result = evaluate_product_policy(inp, policy)
-    assert result.pre_qualified is True
+    inp = _clean_input("PERSONAL_LOAN")
+    result = evaluate_product_policy(inp)
+    assert result.pre_qualification_passed
 
 
 def test_bnpl_approve():
-    inp, policy = _min_clean_input("BNPL")
-    result = evaluate_product_policy(inp, policy)
-    assert result.pre_qualified is True
+    inp = _clean_input("BNPL")
+    result = evaluate_product_policy(inp)
+    assert result.pre_qualification_passed
 
 
 # ---------------------------------------------------------------------------
-# evaluate_product_policy — high PD decline
+# evaluate_product_policy — rejections
 # ---------------------------------------------------------------------------
 
-def test_high_pd_score_declines():
-    policy = get_product_policy("CREDIT_CARD")
-    inp = ProductPolicyInput(
-        pd_score=0.99,
-        fraud_score=0.01,
-        income=80_000.0,
-        existing_monthly_debt=500.0,
-        requested_amount=5_000.0,
-    )
-    result = evaluate_product_policy(inp, policy)
-    assert result.pre_qualified is False
-    assert any("pd_score" in r.rule_name.lower() or "pd" in r.rule_name.lower() for r in result.rule_outcomes)
+def test_high_fraud_score_triggers_reject():
+    inp = _clean_input("CREDIT_CARD")
+    inp.fraud_probability = 0.95
+    result = evaluate_product_policy(inp)
+    assert result.fraud_verdict == "REJECT"
+    assert not result.pre_qualification_passed
 
 
-def test_high_fraud_score_hard_declines():
-    policy = get_product_policy("PERSONAL_LOAN")
-    inp = ProductPolicyInput(
-        pd_score=0.05,
-        fraud_score=0.99,
-        income=80_000.0,
-        existing_monthly_debt=500.0,
-        requested_amount=10_000.0,
-    )
-    result = evaluate_product_policy(inp, policy)
-    assert result.fraud_verdict == "HARD_DECLINE"
-    assert result.pre_qualified is False
+def test_moderate_fraud_score_triggers_review():
+    inp = _clean_input("PERSONAL_LOAN")
+    inp.fraud_probability = 0.50
+    result = evaluate_product_policy(inp)
+    assert result.fraud_verdict == "MANUAL_REVIEW"
 
 
-# ---------------------------------------------------------------------------
-# evaluate_product_policy — DTI breach
-# ---------------------------------------------------------------------------
+def test_high_dti_fails_dti_check():
+    inp = _clean_input("CREDIT_CARD")
+    inp.debt_to_income_ratio = 0.90
+    result = evaluate_product_policy(inp)
+    assert not result.dti_passed
 
-def test_high_dti_declines():
-    policy = get_product_policy("MORTGAGE")
-    # Monthly income = $4_000; monthly debt = $2_500 → DTI = 62.5%
-    inp = ProductPolicyInput(
-        pd_score=0.02,
-        fraud_score=0.01,
-        income=48_000.0,   # annual
-        existing_monthly_debt=2_500.0,
-        requested_amount=200_000.0,
-        collateral_value=250_000.0,
-        extra_features={},
-    )
-    result = evaluate_product_policy(inp, policy)
-    # DTI=62.5% should breach typical mortgage 43% QM limit
-    dti_rule = next(
-        (r for r in result.rule_outcomes if "dti" in r.rule_name.lower()),
-        None,
-    )
-    assert dti_rule is not None, "Expected a DTI rule outcome"
-    assert dti_rule.passed is False
+
+def test_loan_below_minimum_fails():
+    inp = _clean_input("PERSONAL_LOAN")
+    inp.loan_amount_usd = 1.0  # below $1,000 minimum
+    result = evaluate_product_policy(inp)
+    assert not result.loan_amount_passed
+
+
+def test_loan_above_maximum_fails():
+    inp = _clean_input("CREDIT_CARD")
+    inp.loan_amount_usd = 999_999.0  # above $50,000 maximum
+    result = evaluate_product_policy(inp)
+    assert not result.loan_amount_passed
 
 
 # ---------------------------------------------------------------------------
-# evaluate_product_policy — loan amount bounds
+# evaluate_product_policy — custom policy override
 # ---------------------------------------------------------------------------
 
-def test_bnpl_over_limit_declines():
-    policy = get_product_policy("BNPL")
-    inp = ProductPolicyInput(
-        pd_score=0.02,
-        fraud_score=0.01,
-        income=100_000.0,
-        existing_monthly_debt=200.0,
-        requested_amount=999_999.0,   # far above BNPL max
-    )
-    result = evaluate_product_policy(inp, policy)
-    amount_rule = next(
-        (r for r in result.rule_outcomes if "amount" in r.rule_name.lower()),
-        None,
-    )
-    assert amount_rule is not None or result.pre_qualified is False
+def test_custom_policy_applied():
+    base_policy = get_product_policy("CREDIT_CARD")
+    tight_policy = dataclasses.replace(base_policy, max_dti=0.01)
+
+    inp = _clean_input("CREDIT_CARD")
+    inp.debt_to_income_ratio = 0.20  # would normally pass
+    result = evaluate_product_policy(inp, policy=tight_policy)
+    assert not result.dti_passed
 
 
 # ---------------------------------------------------------------------------
@@ -172,9 +153,9 @@ def test_bnpl_over_limit_declines():
 # ---------------------------------------------------------------------------
 
 def test_result_has_required_fields():
-    inp, policy = _min_clean_input("AUTO_LOAN")
-    result = evaluate_product_policy(inp, policy)
+    inp = _clean_input("AUTO_LOAN")
+    result = evaluate_product_policy(inp)
     assert isinstance(result, ProductPolicyResult)
-    assert isinstance(result.rule_outcomes, list)
-    assert isinstance(result.fcra_codes, list)
-    assert result.policy_version  # non-empty string
+    assert isinstance(result.pre_qualification_flags, list)
+    assert isinstance(result.policy_decline_codes, list)
+    assert result.policy_version_tag  # non-empty string

@@ -44,6 +44,7 @@ function DecisionContent() {
   const searchParams = useSearchParams();
   const applicationId = searchParams.get("id") ?? "";
   const [decision, setDecision] = useState<DecisionResponse | null>(null);
+  const [loadTimedOut, setLoadTimedOut] = useState(false);
 
   useEffect(() => {
     // Try to load the fresh decision result from sessionStorage
@@ -52,9 +53,45 @@ function DecisionContent() {
       if (raw) {
         const data: DecisionResponse = JSON.parse(raw);
         setDecision(data);
+        return;
       }
     } catch {}
+    // If no session data, give 2 seconds then show recovery state
+    const timer = setTimeout(() => setLoadTimedOut(true), 2000);
+    return () => clearTimeout(timer);
   }, []);
+
+  if (!decision && loadTimedOut) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+        <div className="max-w-md w-full bg-white rounded-2xl border border-gray-100 shadow-sm p-8 text-center">
+          <div className="w-12 h-12 bg-amber-50 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-6 h-6 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+          </div>
+          <h2 className="text-lg font-bold text-gray-900 mb-2">We couldn&apos;t load your decision</h2>
+          <p className="text-sm text-gray-500 mb-6">
+            Check your email for your decision, or contact our support team for help.
+          </p>
+          <div className="flex flex-col gap-3">
+            <Link
+              href="/apply"
+              className="inline-flex justify-center items-center bg-[#0f172a] hover:bg-[#1e3a5f] text-white font-semibold py-3 px-6 rounded-lg text-sm transition-colors"
+            >
+              Start a new application
+            </Link>
+            <a
+              href="mailto:support@lendsmart.com"
+              className="text-sm text-[#374151] hover:text-[#0f172a] underline"
+            >
+              Contact support
+            </a>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!decision) {
     return (

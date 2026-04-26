@@ -127,7 +127,7 @@ export default function ApplyPage() {
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900">Apply for a Loan</h1>
-          <p className="text-gray-500 mt-2">Fill in your details to get an instant decision</p>
+          <p className="text-gray-600 mt-2">Fill in your details to get an instant decision</p>
         </div>
 
         {/* Step progress */}
@@ -242,11 +242,11 @@ function Step1LoanDetails({
   return (
     <form onSubmit={handleSubmit(onNext)} className="space-y-6">
       <h2 className="text-xl font-bold text-gray-900 mb-1">Loan Details</h2>
-      <p className="text-gray-500 text-sm mb-6">Tell us what you need the loan for.</p>
+      <p className="text-gray-600 text-sm mb-6">Tell us what you need the loan for.</p>
 
       {/* Loan amount slider */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
+        <label htmlFor="loan_amount" className="block text-sm font-medium text-gray-700 mb-2">
           Loan Amount
         </label>
         <div className="flex items-center gap-4 mb-2">
@@ -258,6 +258,7 @@ function Step1LoanDetails({
           </span>
         </div>
         <input
+          id="loan_amount"
           type="range"
           min={1000}
           max={100000}
@@ -277,10 +278,11 @@ function Step1LoanDetails({
 
       {/* Loan purpose */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">
+        <label htmlFor="loan_purpose" className="block text-sm font-medium text-gray-700 mb-2">
           Loan Purpose
         </label>
         <select
+          id="loan_purpose"
           className="w-full border border-gray-300 rounded-lg px-3 py-2.5 text-gray-900 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           {...register("loan_purpose")}
         >
@@ -373,12 +375,13 @@ function Step2PersonalInfo({
   return (
     <form onSubmit={handleSubmit(onNext)} className="space-y-5">
       <h2 className="text-xl font-bold text-gray-900 mb-1">Personal & Financial Info</h2>
-      <p className="text-gray-500 text-sm mb-6">Your information is encrypted and never sold.</p>
+      <p className="text-gray-600 text-sm mb-6">Your information is encrypted and never sold.</p>
 
-      <FormField label="Annual Income" error={errors.annual_income?.message}>
+      <FormField label="Annual Income" htmlFor="annual_income" error={errors.annual_income?.message}>
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
           <input
+            id="annual_income"
             type="number"
             min={1}
             className="w-full border border-gray-300 rounded-lg pl-7 pr-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -388,8 +391,9 @@ function Step2PersonalInfo({
         </div>
       </FormField>
 
-      <FormField label="Employment Status" error={errors.employment_status?.message}>
+      <FormField label="Employment Status" htmlFor="employment_status" error={errors.employment_status?.message}>
         <select
+          id="employment_status"
           className="w-full border border-gray-300 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           {...register("employment_status")}
         >
@@ -402,8 +406,9 @@ function Step2PersonalInfo({
       </FormField>
 
       {["employed", "self-employed"].includes(employmentStatus) && (
-        <FormField label="Months with Current Employer" error={errors.employer_tenure_months?.message}>
+        <FormField label="Months with Current Employer" htmlFor="employer_tenure_months" error={errors.employer_tenure_months?.message}>
           <input
+            id="employer_tenure_months"
             type="number"
             min={0}
             className="w-full border border-gray-300 rounded-lg px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -413,8 +418,9 @@ function Step2PersonalInfo({
         </FormField>
       )}
 
-      <FormField label="Credit Score Range" error={errors.credit_score_range?.message}>
+      <FormField label="Credit Score Range" htmlFor="credit_score_range" error={errors.credit_score_range?.message}>
         <select
+          id="credit_score_range"
           className="w-full border border-gray-300 rounded-lg px-3 py-2.5 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
           {...register("credit_score_range")}
         >
@@ -425,10 +431,11 @@ function Step2PersonalInfo({
         </select>
       </FormField>
 
-      <FormField label="Existing Debt Amount" error={errors.existing_debt_amount?.message}>
+      <FormField label="Existing Debt Amount" htmlFor="existing_debt_amount" error={errors.existing_debt_amount?.message}>
         <div className="relative">
           <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">$</span>
           <input
+            id="existing_debt_amount"
             type="number"
             min={0}
             className="w-full border border-gray-300 rounded-lg pl-7 pr-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -448,8 +455,9 @@ function Step2PersonalInfo({
       </div>
 
       <div className="grid grid-cols-2 gap-4">
-        <FormField label="Open Accounts" error={errors.num_open_accounts?.message}>
+        <FormField label="Open Accounts" htmlFor="num_open_accounts" error={errors.num_open_accounts?.message}>
           <input
+            id="num_open_accounts"
             type="number"
             min={0}
             max={100}
@@ -457,8 +465,9 @@ function Step2PersonalInfo({
             {...register("num_open_accounts", { valueAsNumber: true })}
           />
         </FormField>
-        <FormField label="Derogatory Marks" error={errors.num_derogatory_marks?.message}>
+        <FormField label="Derogatory Marks" htmlFor="num_derogatory_marks" error={errors.num_derogatory_marks?.message}>
           <input
+            id="num_derogatory_marks"
             type="number"
             min={0}
             max={20}
@@ -518,7 +527,7 @@ function Step3Review({
   return (
     <form onSubmit={handleSubmit(() => onSubmit(true))} className="space-y-6">
       <h2 className="text-xl font-bold text-gray-900 mb-1">Review Your Application</h2>
-      <p className="text-gray-500 text-sm mb-4">Please confirm everything looks correct.</p>
+      <p className="text-gray-600 text-sm mb-4">Please confirm everything looks correct.</p>
 
       {/* Summary card */}
       <div className="border border-gray-200 rounded-xl divide-y">
@@ -615,16 +624,18 @@ function Step3Review({
 
 function FormField({
   label,
+  htmlFor,
   error,
   children,
 }: {
   label: string;
+  htmlFor?: string;
   error?: string;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <label className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
+      <label htmlFor={htmlFor} className="block text-sm font-medium text-gray-700 mb-1.5">{label}</label>
       {children}
       {error && <p className="text-red-500 text-xs mt-1">{error}</p>}
     </div>
@@ -634,7 +645,7 @@ function FormField({
 function SummaryRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between items-center px-4 py-3">
-      <span className="text-sm text-gray-500">{label}</span>
+      <span className="text-sm text-gray-600">{label}</span>
       <span className="text-sm font-semibold text-gray-900">{value}</span>
     </div>
   );

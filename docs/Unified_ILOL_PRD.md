@@ -21,6 +21,7 @@
    - [Module 4: Compliance & Audit Layer](#44-module-4-compliance--audit-layer)
    - [Module 5: Model Lifecycle Management](#45-module-5-model-lifecycle-management)
    - [Module 6: RAG-Powered AI Analytics Agent Platform](#46-module-6-rag-powered-ai-analytics-agent-platform)
+   - [Module 7: Tenant-Scoped Semantic Layer](#47-module-7-tenant-scoped-semantic-layer)
 5. [Anti-Hallucination Framework](#5-anti-hallucination-framework-regulatory-grade)
 6. [UX & Workflow Design](#6-ux--workflow-design)
 7. [System Architecture](#7-system-architecture)
@@ -134,6 +135,9 @@ Every AI-generated analysis surfaces the complete, executable SQL and Python use
 
 #### Pillar 5: Extensible by Design
 ILOL is modular. Customers can adopt individual modules (e.g., decisioning only, compliance only, AI agent only) and expand. The API-first design enables integration into any existing tech stack.
+
+#### Pillar 6: Tenant-Scoped Intelligence
+No two lenders use the same vocabulary for risk. A credit union calls it "charged off"; a fintech calls it "written off." A community bank tracks a proprietary bureau score under a name no platform glossary anticipates. The Tenant-Scoped Semantic Layer means the AI agent understands each tenant's language natively — not through brittle string matching, but through a governed, versioned, tamper-detected registry of business terms, metric formulas, and custom data sources that each tenant owns and maintains.
 
 ### 2.4 Product Principles
 
@@ -828,6 +832,204 @@ Estimated execution time: ~8 seconds
 
 ---
 
+### 4.7 Module 7: Tenant-Scoped Semantic Layer
+
+The Tenant-Scoped Semantic Layer is the vocabulary and schema intelligence layer that sits between raw BigQuery tables and the AI Analytics Agent. It answers the foundational question that no generic NL-to-SQL system can answer alone: **"What does *this term* mean for *this tenant*?"**
+
+#### 4.7.1 Rationale
+
+**Problem: Natural language queries break at tenant vocabulary boundaries.**
+
+The ILOL platform serves lenders with genuinely different vocabularies, product configurations, and data sources. When a risk analyst at Tenant A asks "show me thin-file approval rates," the AI agent must know:
+- That "thin file" maps to the SQL predicate `is_thin_file = 1` on `loan_applications` — not to `tradeline_count < 5` on a bureau enrichment table that Tenant B has registered
+- That "approval rate" means `COUNTIF(decision='APPROVE') / COUNT(*)` for Tenant A, but Tenant B has redefined it to exclude manual reviews from the denominator
+- That Tenant C's question "show me gold-band performance" refers to their internal segmentation scheme stored in a custom bureau enrichment table not present on any other tenant's schema
+
+Without a semantic layer, the AI agent faces three failure modes:
+1. **Silent mistranslation** — maps a tenant-specific term to the wrong platform column and returns a plausible but incorrect number
+2. **Hard failure** — cannot resolve the term at all; returns an unhelpful error
+3. **Hallucination** — LLM parametric memory fills the gap with a fabricated definition
+
+All three failure modes are unacceptable in a regulated lending environment. The Tenant-Scoped Semantic Layer eliminates them architecturally.
+
+**Problem: Tenants bring data that the platform schema does not anticipate.**
+
+Mid-market lenders increasingly combine platform data with proprietary enrichment sources: third-party bureau scores, internal behavioral scores, fintech data partnerships, or legacy core banking extracts. Any AI analytics capability that cannot query across these custom sources is immediately limited in value for the most analytically sophisticated tenants.
+
+The Tenant-Scoped Semantic Layer enables tenants to register custom data sources — with full governance, lineage tracking, and schema drift protection — so the AI agent can join across them as naturally as it queries native platform tables.
+
+#### 4.7.2 Architecture Overview
+
+The semantic layer operates as a **two-tier resolution system** evaluated on every NL query before SQL generation:
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│  NL QUERY: "What was the charge-off rate for gold-band           │
+│  members last quarter?"   (Tenant: acme_cu)                      │
+└─────────────────────────────────┬────────────────────────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │     AnalyticsScope         │
+                    │  resolve(JWT → tenant_id)  │
+                    └─────────────┬─────────────┘
+                                  │
+          ┌───────────────────────▼────────────────────────┐
+          │           SEMANTIC RESOLUTION (two tiers)       │
+          │                                                  │
+          │  Tier 2: Tenant Registry (acme_cu)              │
+          │    "gold-band" → score_band = 'GOLD'            │
+          │    (table: acme_custom_segments, join: app_id)  │
+          │                                                  │
+          │  Tier 1: Platform Glossary (fallback)           │
+          │    "charge-off rate" → delinquency_bucket =     │
+          │    'charged_off' / COUNT(*)                     │
+          └───────────────────────┬────────────────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │     SQL GENERATOR          │
+                    │  (schema-injected context) │
+                    └─────────────┬─────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │     SQL VALIDATOR          │
+                    │  allowlist · tenant_id     │
+                    │  inject · PII strip        │
+                    └─────────────┬─────────────┘
+                                  │
+                    ┌─────────────▼─────────────┐
+                    │     EXECUTION + CITE       │
+                    └────────────────────────────┘
+```
+
+Tenant-level entries always win over platform defaults. Platform glossary entries are `canonical=true` and cannot be overridden in ways that would introduce PII or ECOA-prohibited variable usage.
+
+#### 4.7.3 Entry Types
+
+The semantic registry supports four entry types, each versioned, SHA-256 hashed for tamper detection, and append-only:
+
+| Entry Type | What It Defines | Example |
+|---|---|---|
+| `glossary_term` | Maps a business term (+ synonyms) to a SQL predicate or column | `"thin file" → is_thin_file = 1 ON loan_applications` |
+| `synonym_override` | Tenant-specific label for a platform canonical value | `"approved" → decision = 'APPROVE'` (tenant uses lowercase) |
+| `metric` | Named computed metric with formula SQL and base table | `"30-day approval rate" → COUNTIF(decision='APPROVE'...` |
+| `table_schema` | Registers a net-new tenant data source for AI query scope | `acme_bureau_enrichments (join: application_id)` |
+
+**Glossary term example (JSON):**
+```json
+{
+  "entry_type": "glossary_term",
+  "name": "gold-band",
+  "display_name": "Gold Band Member",
+  "description": "Internal segmentation tier for members with score 720-779",
+  "synonyms": ["gold band", "gold tier", "gold segment"],
+  "sql_predicate": "score_band = 'GOLD'",
+  "applies_to_tables": ["acme_custom_segments"],
+  "canonical": false
+}
+```
+
+**Custom table schema example (JSON):**
+```json
+{
+  "entry_type": "table_schema",
+  "name": "acme_bureau_enrichments",
+  "bigquery_table": "acme-tenant.crp_tenant_acme.bureau_enrichments",
+  "join_key": "application_id",
+  "join_to": "loan_applications",
+  "columns": [
+    {"name": "bureau_score", "type": "FLOAT64", "description": "Proprietary bureau score"},
+    {"name": "tradeline_count", "type": "INTEGER", "description": "Number of open tradelines"}
+  ],
+  "requires_tenant_filter": true,
+  "schema_hash": "sha256-of-column-definition"
+}
+```
+
+#### 4.7.4 Governance Model
+
+All semantic registry entries follow the same governance discipline as credit policy versions:
+
+| Property | Specification |
+|---|---||
+| **Append-only** | Entries are never updated in place; new versions are appended; `is_active` flag controls which version is live |
+| **SHA-256 tamper detection** | `definition_sha256` computed at registration; mismatch at query time blocks the query and triggers an alert |
+| **Four-eyes control** | `table_schema` entries require a second approver (typically a `data_engineer`) via the four-eyes rule `tenant_schema_registration` |
+| **Credit analyst authority** | `credit_analyst` role can propose glossary terms and metrics; proposals activate only after approval |
+| **Schema drift protection** | If a registered table's live schema diverges from the registered `schema_hash`, NL queries referencing that table are blocked until re-approval |
+| **Audit trail** | Every registration event logged with `approved_by`, `created_at`, and entry hash — included in exam packets |
+
+**Schema drift protection flow:**
+```
+Tenant registers table → schema_hash stored → lineage node created
+
+Every NL query referencing the tenant table:
+  → compute live schema hash (INFORMATION_SCHEMA.COLUMNS)
+  → compare to registered hash
+  → MATCH:    proceed with query
+  → MISMATCH: block query, return HTTP 422
+               "Schema drift detected on table acme_bureau_enrichments.
+                Re-register at POST /v1/analytics/tenant/schema/register."
+               → flag for four-eyes re-approval
+```
+
+#### 4.7.5 Functional Requirements
+
+| ID | Requirement | Priority |
+|---|---|---|
+| SEM-001 | Platform glossary harvested automatically from `data_contracts` enum values at service startup | P0 |
+| SEM-002 | Platform metric registry includes 9 named metrics (`approval_rate`, `charge_off_rate`, `expected_loss`, `dir_score`, etc.) resolvable by name in NL queries | P0 |
+| SEM-003 | Tenant glossary terms, synonym overrides, and custom metrics stored in append-only `tenant_semantic_registry` BigQuery table with SHA-256 per entry | P0 |
+| SEM-004 | Tenant-registered custom data source (`table_schema`) enrolled in data lineage as `external_data_source` node — visible in lineage DAG and exam packets | P0 |
+| SEM-005 | Two-tier resolution: tenant entries win over platform defaults at query time; resolution logged per NL query | P0 |
+| SEM-006 | `POST /v1/analytics/tenant/schema/register` — registers a new tenant table schema; requires four-eyes approval for `table_schema` entry type | P0 |
+| SEM-007 | `GET /v1/analytics/glossary` — returns merged platform + tenant glossary for the authenticated tenant (no cross-tenant leakage) | P0 |
+| SEM-008 | `POST /v1/analytics/tenant/glossary` — proposes a new glossary term or metric; credit_analyst role required | P1 |
+| SEM-009 | Schema drift detection on every NL query that references a tenant-registered table; block + alert on mismatch | P0 |
+| SEM-010 | Semantic registry entries included in exam packet `Data Governance Evidence` section — version, approver, hash | P1 |
+| SEM-011 | Platform admin can inspect all active semantic entries for a tenant via admin API | P1 |
+| SEM-012 | Tenant semantic entries carry version history; roll back to any prior entry version with single action | P2 |
+| SEM-013 | `external_service` role (e.g., LucidCredit) receives merged glossary in analytics API responses — no direct DB access | P1 |
+
+#### 4.7.6 Integration with the AI Agent Pipeline
+
+The semantic layer is injected into the AI agent pipeline at the `PlannerAgent` step. This is the only point where tenant-specific vocabulary is resolved — ensuring the SQL generator always receives schema-accurate, tenant-correct context.
+
+```
+CoordinatorAgent → IntentClassifierAgent
+                           │
+                  PlannerAgent  ← AnalyticsScope.merged_glossary
+                           │     ← AnalyticsScope.metrics
+                           │     ← AnalyticsScope.allowed_tables
+                  QueryBuilderAgent  (schema injection complete)
+                           │
+                  SQLValidator  (tenant_id injection, allowlist)
+                           │
+                  ExecutionAgent
+                           │
+                  ValidatorAgent  ← citations carry semantic entry version
+                           │
+                  FormatterAgent
+```
+
+Every AI answer whose SQL used a tenant-defined term includes the semantic entry version in its citation:
+```
+[Source: acme_custom_segments.score_band | Term: "gold-band" v1.0.0 | Query: q-abc123 | Date: 2026-04-01]
+```
+
+This citation is included in exam packet appendices, making tenant vocabulary choices auditable alongside the data queries themselves.
+
+#### 4.7.7 Semantic Layer in Exam Packets
+
+The `Data Governance Evidence` section of every exam packet includes a **Tenant Semantic Registry Appendix** containing:
+- All active glossary terms and their definitions (version, approved_by, SHA-256)
+- All registered custom table schemas with schema hashes and lineage node IDs
+- All custom metric formulas with formula SQL
+- Any schema drift events detected during the exam period (including which queries were blocked)
+
+This gives examiners full visibility into what vocabulary the AI agent was operating with — eliminating a key source of AI explainability risk in regulatory submissions.
+
+---
+
 ## 5. Anti-Hallucination Framework (Regulatory-Grade)
 
 In a regulated lending environment, a single hallucinated metric or fabricated reason code can constitute a regulatory violation. This framework is **architecturally enforced** — not advisory.
@@ -852,6 +1054,7 @@ that data ingestion has completed or narrow the query scope."
 
 | Layer | Enforcement Mechanism | Component |
 |---|---|---|
+| **Semantic Layer Grounding** | Platform glossary + tenant glossary resolved before schema injection; SQL never generated against undefined terms | `AnalyticsScope` + `PlannerAgent` |
 | **Schema Grounding** | SQL generated only against registered schemas; schema injected at generation time | `QueryBuilderAgent` |
 | **DB Dry-Run Validation** | Every SQL query validated (zero bytes) before execution | `QueryBuilderAgent` |
 | **Result Reconciliation** | AI narrative numbers must match query result set (deterministic check) | `ValidatorAgent` |
@@ -877,6 +1080,8 @@ that data ingestion has completed or narrow the query scope."
 | Schema mismatch detected | Abort; surface error to user with table name and column |
 | Data ingestion lag | Flag staleness with last-updated timestamp before returning results |
 | Ambiguous metric definition | Ask clarifying question: "Do you mean 30-day or any delinquency?" |
+| Tenant term not in glossary | Ask clarifying question: "I don't have a definition for 'gold-band'. Do you mean score_band = 'GOLD'? If so, register this term at Settings → Glossary." |
+| Schema drift on tenant table | Block query; return `schema_drift_detected` error with re-registration link; log to governance incident queue |
 | LLM response cannot be reconciled with data | Return data only; suppress narrative; log hallucination attempt to monitoring |
 | Regulatory KB retrieval fails | Return data answer only; flag that regulatory framing is unavailable |
 | Code artifact missing | `FormatterAgent` blocks output delivery; logs error to incident queue |
@@ -1153,6 +1358,7 @@ ILOL follows a **modular microservices architecture** with a shared event bus, c
 | **Analytics Store** | Aggregated metrics, portfolio analytics, cohort analysis, AI agent queries | BigQuery / Snowflake | 10 years |
 | **Model Store** | Model artifacts, versions, validation reports | S3 + MLflow | Indefinite |
 | **AI Code Artifact Store** | Immutable SQL + Python per AI answer | S3 / GCS (versioned) | 10 years |
+| **Tenant Semantic Registry** | Versioned glossary terms, metric formulas, and custom table schemas per tenant | BigQuery (append-only, SHA-256) | 7 years |
 
 ### 8.2 Decision Store Schema (Core)
 
@@ -1382,6 +1588,30 @@ GET    /api/v1/agent/query/{query_id}/code-artifacts
 GET    /api/v1/agent/query/{query_id}/code-archive.zip
 ```
 
+#### Analytics Query API (SQL + NL + Saved Queries)
+```
+POST   /v1/analytics/query/sql
+POST   /v1/analytics/query/nl
+GET    /v1/analytics/queries/saved
+POST   /v1/analytics/queries/save
+```
+
+#### Tenant Semantic Registry API
+```
+GET    /v1/analytics/glossary                         # Merged platform + tenant glossary
+POST   /v1/analytics/tenant/glossary                  # Propose glossary term or metric
+POST   /v1/analytics/tenant/schema/register           # Register custom table schema (four-eyes)
+GET    /v1/analytics/tenant/schema/{name}/status      # Schema drift status for a registered table
+```
+
+#### Evidence & Reporting API
+```
+POST   /v1/analytics/evidence/exam-packet
+GET    /v1/analytics/evidence/exam-packet/{id}
+POST   /v1/analytics/reports/pl
+GET    /v1/analytics/reports/pl/{id}
+```
+
 ### 10.3 Webhook Events
 
 | Event | Trigger |
@@ -1394,6 +1624,8 @@ GET    /api/v1/agent/query/{query_id}/code-archive.zip
 | `exam_packet.ready` | Packet generation complete |
 | `agent.answer.ready` | AI agent answer with code artifacts delivered |
 | `hallucination.detected` | ValidatorAgent reconciliation failure — suppressed output |
+| `semantic.schema_drift` | Tenant table schema hash mismatch detected — queries blocked |
+| `semantic.term_proposed` | New tenant glossary term or metric awaiting approval |
 
 ---
 
@@ -1542,7 +1774,9 @@ Each phase delivers a complete, shippable product. Phase 1 delivers immediate co
 | Visual policy diff (side-by-side version comparison) | M10 |
 | NLG executive summaries v1 (weekly/monthly CRO digest) | M10 |
 | AI Agent v2: multi-agent routing, FairLendingAgent, session memory (Redis) | M10 |
-| Exam packet v2 (fair lending + override log + AI audit appendix) | M11 |
+| **Tenant-Scoped Semantic Layer v1**: platform glossary (harvested from data contracts), 9 named platform metrics, `AnalyticsScope` dependency, `POST /v1/analytics/query/sql` endpoint | M10 |
+| **Tenant-Scoped Semantic Layer v2**: `tenant_semantic_registry` table, glossary/metric registration endpoints, two-tier resolution, schema drift detection | M11 |
+| Exam packet v2 (fair lending + override log + AI audit appendix + **Semantic Registry Appendix**) | M11 |
 | Drill-down: portfolio → segment → loan → decision | M11 |
 | Webhook event system | M11 |
 | GraphQL analytics API | M12 |

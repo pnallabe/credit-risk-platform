@@ -216,10 +216,11 @@ async def build_model_documentation_component(
             intended_population="US credit card applicants, age 18+",
         )
         mdr = generate_mdr(run_id=None, config=config)
+        data = dataclasses.asdict(mdr) if dataclasses.is_dataclass(mdr) else dict(mdr)
         return ExamPacketComponent(
             name="model_documentation",
             status="complete",
-            data=dataclasses.asdict(mdr),
+            data=data,
         )
     except Exception as exc:
         return ExamPacketComponent(

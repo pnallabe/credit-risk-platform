@@ -251,6 +251,7 @@ class TestComplianceEngineGate:
 
         monkeypatch.setattr("compliance.engine._log_sync", _log)
 
-        result = self.engine.gate(**_gate_kwargs())
-        # Usury check + action eligibility = at least 2 events for standard case
+        # Use is_covered_borrower=True so both usury_cap + mla_mapr checks log events
+        result = self.engine.gate(**_gate_kwargs(is_covered_borrower=True, apr_assigned=24.99))
+        # Usury check + MLA MAPR check = at least 2 events
         assert len(result.compliance_event_ids) >= 2

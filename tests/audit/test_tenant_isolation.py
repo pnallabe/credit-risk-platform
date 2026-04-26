@@ -166,3 +166,61 @@ class TestTenantIdRequired:
                     tenant_id="",
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# TenantContext / tenant_guard tests
+# ---------------------------------------------------------------------------
+
+class TestTenantGuard:
+    """Tests for audit.tenant_guard — scoped_tenant, require_tenant_context, etc."""
+
+    def test_scoped_tenant_sets_and_clears_context(self) -> None:
+        from audit.tenant_guard import TenantContext, require_tenant_context, scoped_tenant
+        ctx = TenantContext(tenant_id="t1", source="jwt", authorized_by="user@example.com")
+        with scoped_tenant(ctx) as active:
+            assert active.tenant_id == "t1"
+            result = require_tenant_context()
+            assert result.tenant_id == "t1"
+        # After exiting, context should be cleared
+        import pytest
+        with pytest.raises(RuntimeError):
+            require_tenant_context()
+
+    def test_require_tenant_context_raises_without_context(self) -> None:
+        from audit.tenant_guard import require_tenant_context
+        import pytest
+        with pytest.raises(RuntimeError, match="No tenant context"):
+            require_tenant_context()
+
+    def test_tenant_scoped_decorator_injects_tenant_id(self) -> None:
+        from audit.tenant_guard import TenantContext, scoped_tenant, tenant_scoped
+
+        @tenant_scoped
+        def my_func(*, tenant_id: str = "") -> str:
+            return tenant_id
+
+        ctx = TenantContext(tenant_id="t-injected", source="test", authorized_by="pytest")
+        with scoped_tenant(ctx):
+            result = my_func()
+        assert result == "t-injected"
+
+    def test_tenant_scoped_decorator_raises_without_context(self) -> None:
+        from audit.tenant_guard import tenant_scoped
+        import pytest
+
+        @tenant_scoped
+        def my_func(*, tenant_id: str = "") -> str:
+            return tenant_id
+
+        with pytest.raises(RuntimeError):
+            my_func()
+
+    def test_admin_override_sets_source(self) -> None:
+        from audit.tenant_guard import admin_override, require_tenant_context
+
+        with admin_override("tenant-admin", authorized_by="data-eng-team"):
+            ctx = require_tenant_context()
+            assert ctx.tenant_id == "tenant-admin"
+            assert ctx.source == "admin_override"
+            assert ctx.authorized_by == "data-eng-team"

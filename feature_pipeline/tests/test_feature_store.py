@@ -65,8 +65,11 @@ CREATE TABLE IF NOT EXISTS feature_read_audit (
 async def sqlite_engine() -> AsyncEngine:
     """In-memory SQLite async engine with the features table pre-created."""
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    # SQLite/aiosqlite only supports one statement per execute(); split manually.
+    statements = [s.strip() for s in SQLITE_SCHEMA.split(";") if s.strip()]
     async with engine.begin() as conn:
-        await conn.execute(text(SQLITE_SCHEMA))
+        for stmt in statements:
+            await conn.execute(text(stmt))
     yield engine
     await engine.dispose()
 

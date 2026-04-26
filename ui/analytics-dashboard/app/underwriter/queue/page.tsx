@@ -26,20 +26,37 @@ interface QueueItem {
   fraud_probability: number;
   status: "MANUAL_REVIEW";
   loan_purpose: string;
+  urgencyScore: number;
+  urgencyTier: "CRITICAL" | "HIGH" | "NORMAL";
+}
+
+function computeUrgency(pd: number, fraud: number): { score: number; tier: "CRITICAL" | "HIGH" | "NORMAL" } {
+  const score = fraud * 0.5 + pd * 0.5;
+  return {
+    score,
+    tier: score >= 0.15 ? "CRITICAL" : score >= 0.08 ? "HIGH" : "NORMAL",
+  };
 }
 
 function generateMockQueue(n = 24): QueueItem[] {
   const purposes = ["personal", "auto", "home_improvement", "medical", "education"];
-  return Array.from({ length: n }, (_, i) => ({
-    application_id: `APP-${100 + i}`,
-    submitted_at: new Date(Date.now() - i * 3_600_000).toISOString(),
-    loan_amount: Math.floor(Math.random() * 80000 + 5000),
-    credit_score: Math.floor(Math.random() * 200 + 620),
-    pd_score: parseFloat((Math.random() * 0.08 + 0.04).toFixed(4)),
-    fraud_probability: parseFloat((Math.random() * 0.4 + 0.2).toFixed(4)),
-    status: "MANUAL_REVIEW" as const,
-    loan_purpose: purposes[i % purposes.length],
-  }));
+  return Array.from({ length: n }, (_, i) => {
+    const pd_score = parseFloat((Math.random() * 0.08 + 0.04).toFixed(4));
+    const fraud_probability = parseFloat((Math.random() * 0.4 + 0.2).toFixed(4));
+    const { score, tier } = computeUrgency(pd_score, fraud_probability);
+    return {
+      application_id: `APP-${100 + i}`,
+      submitted_at: new Date(Date.now() - i * 3_600_000).toISOString(),
+      loan_amount: Math.floor(Math.random() * 80000 + 5000),
+      credit_score: Math.floor(Math.random() * 200 + 620),
+      pd_score,
+      fraud_probability,
+      status: "MANUAL_REVIEW" as const,
+      loan_purpose: purposes[i % purposes.length],
+      urgencyScore: score,
+      urgencyTier: tier,
+    };
+  }).sort((a, b) => b.urgencyScore - a.urgencyScore);
 }
 
 const MOCK_QUEUE = generateMockQueue();
@@ -65,6 +82,22 @@ export default function UnderwriterQueuePage() {
   const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>([]);
 
   const columns = [
+    colHelper.accessor("urgencyTier", {
+      header: "Urgency",
+      cell: (info) => {
+        const tier = info.getValue();
+        const styles = {
+          CRITICAL: "bg-red-100 text-red-700 border border-red-200",
+          HIGH: "bg-amber-100 text-amber-700 border border-amber-200",
+          NORMAL: "bg-gray-100 text-gray-600 border border-gray-200",
+        };
+        return (
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${styles[tier]}`}>
+            {tier}
+          </span>
+        );
+      },
+    }),
     colHelper.accessor("application_id", {
       header: "Application ID",
       cell: (info) => (
@@ -186,15 +219,26 @@ export default function UnderwriterQueuePage() {
                 ))}
               </thead>
               <tbody className="divide-y divide-gray-50">
-                {table.getRowModel().rows.map((row) => (
-                  <tr key={row.id} className="hover:bg-gray-50 transition-colors">
-                    {row.getVisibleCells().map((cell) => (
-                      <td key={cell.id} className="px-4 py-3 whitespace-nowrap">
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
+                {table.getRowModel().rows.length === 0 ? (
+                  <tr>
+                    <td colSpan={columns.length} className="px-4 py-16 text-center">
+                      <p className="text-sm font-medium text-gray-500">No applications need review right now.</p>
+                      <p className="text-xs text-gray-400 mt-1">
+                        <a href="/underwriter/history" className="text-blue-600 hover:underline">View review history →</a>
+                      </p>
+                    </td>
                   </tr>
-                ))}
+                ) : (
+                  table.getRowModel().rows.map((row) => (
+                    <tr key={row.id} className="hover:bg-gray-50 transition-colors">
+                      {row.getVisibleCells().map((cell) => (
+                        <td key={cell.id} className="px-4 py-3 whitespace-nowrap">
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      ))}
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

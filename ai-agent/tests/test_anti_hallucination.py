@@ -25,6 +25,7 @@ for name in [
     "langchain.memory",
     "langchain.prompts",
     "langchain.tools",
+    "langchain.schema",
     "langchain_openai",
     "slowapi",
     "slowapi.errors",
@@ -34,18 +35,9 @@ for name in [
         sys.modules[name] = types.ModuleType(name)
 
 # Provide minimal stubs
-langchain_agents = sys.modules["langchain.agents"]
-langchain_agents.AgentExecutor = MagicMock  # type: ignore[attr-defined]
-langchain_agents.create_react_agent = MagicMock()  # type: ignore[attr-defined]
-
-langchain_memory = sys.modules["langchain.memory"]
-langchain_memory.ConversationSummaryBufferMemory = MagicMock  # type: ignore[attr-defined]
-
-langchain_prompts = sys.modules["langchain.prompts"]
-langchain_prompts.PromptTemplate = MagicMock  # type: ignore[attr-defined]
-
-langchain_tools = sys.modules["langchain.tools"]
-langchain_tools.Tool = MagicMock  # type: ignore[attr-defined]
+langchain_schema = sys.modules["langchain.schema"]
+langchain_schema.HumanMessage = MagicMock  # type: ignore[attr-defined]
+langchain_schema.SystemMessage = MagicMock  # type: ignore[attr-defined]
 
 langchain_openai = sys.modules["langchain_openai"]
 langchain_openai.ChatOpenAI = MagicMock  # type: ignore[attr-defined]
@@ -85,23 +77,37 @@ def test_sql_tool_populates_turn_result(tmp_path):
             "tools_called": [],
         }
 
-    # Patch _get_conn to use a tmp SQLite DB
-    from unittest.mock import patch
+    # Patch _get_sync_engine to use a tmp SQLite DB
+    from unittest.mock import patch, MagicMock
     import sqlite3
 
     db_path = str(tmp_path / "test.db")
     real_conn = sqlite3.connect(db_path)
     real_conn.row_factory = sqlite3.Row
 
-    def fake_get_conn():
-        class FakeCtx:
-            def __enter__(self_):
-                return real_conn
-            def __exit__(self_, *a):
-                pass
-        return FakeCtx()
+    # Wrap the sqlite3 connection in a SQLAlchemy-compatible mock
+    class FakeResult:
+        def __init__(self, cursor):
+            self._cursor = cursor
+        def fetchmany(self, n):
+            return self._cursor.fetchmany(n)
+        def keys(self):
+            return [d[0] for d in self._cursor.description] if self._cursor.description else []
 
-    with patch.object(main_mod, "_get_conn", fake_get_conn):
+    class FakeConn:
+        def __enter__(self_):
+            return self_
+        def __exit__(self_, *a):
+            pass
+        def execute(self_, stmt):
+            cursor = real_conn.cursor()
+            cursor.execute(str(stmt))
+            return FakeResult(cursor)
+
+    fake_engine = MagicMock()
+    fake_engine.connect.return_value = FakeConn()
+
+    with patch.object(main_mod, "_get_sync_engine", return_value=fake_engine):
         result = _sql_query_tool("SELECT 1 AS x")
 
     real_conn.close()
@@ -155,29 +161,27 @@ async def test_metadata_sse_event_emitted():
     """Streaming response must emit a metadata event with confidence_score."""
     import src.main as main_mod
 
-    # Build a fake executor that yields a single output chunk
-    fake_executor = MagicMock()
+    # Build a fake OrchestratorAgent that yields synthesis_token + synthesis_complete
+    async def fake_orchestrator_astream(plan, query, history=""):
+        yield {"event": "synthesis_token", "token": "mock answer "}
+        yield {"event": "synthesis_complete", "answer": "mock answer", "python_code": []}
 
-    async def fake_astream(inputs):
-        yield {"output": "mock answer"}
+    fake_orchestrator = MagicMock()
+    fake_orchestrator.astream = fake_orchestrator_astream
 
-    fake_executor.astream = fake_astream
-
-    fake_session = {"executor": fake_executor, "memory": MagicMock(), "persona": "data_analyst"}
-
-    with patch.object(main_mod, "_get_or_create_session", return_value=fake_session), \
-         patch.object(main_mod, "_get_conn") as mock_conn:
-        # Make _get_conn a no-op context manager
-        cm = MagicMock()
-        cm.__enter__ = MagicMock(return_value=MagicMock())
-        cm.__exit__ = MagicMock(return_value=False)
-        mock_conn.return_value = cm
+    with patch("src.main.OrchestratorAgent", return_value=fake_orchestrator), \
+         patch.object(main_mod, "_get_async_engine") as mock_engine:
+        # Make DB calls no-ops
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.execute = AsyncMock()
+        mock_engine.return_value.begin = MagicMock(return_value=mock_conn)
 
         events = []
         async for event in _stream_agent_response("sess-test", "hello", "data_analyst"):
             events.append(event)
 
-    bodies = " ".join(events)
     assert any('"metadata"' in e for e in events), "No metadata event found"
     assert any('"confidence_score"' in e for e in events), "No confidence_score in metadata"
     assert events[-1] == "data: [DONE]\n\n"
@@ -191,25 +195,26 @@ async def test_grounding_gate_emits_refusal():
     """When row_count == 0, a refusal event should be emitted in the stream."""
     import src.main as main_mod
 
-    fake_executor = MagicMock()
+    async def fake_orchestrator_astream(plan, query, history=""):
+        # Emit empty output — no rows fetched → grounding gate fires
+        yield {"event": "synthesis_token", "token": ""}
+        yield {"event": "synthesis_complete", "answer": "", "python_code": []}
 
-    async def fake_astream(inputs):
-        yield {"output": ""}
+    fake_orchestrator = MagicMock()
+    fake_orchestrator.astream = fake_orchestrator_astream
 
-    fake_executor.astream = fake_astream
-    fake_session = {"executor": fake_executor, "memory": MagicMock(), "persona": "data_analyst"}
-
-    with patch.object(main_mod, "_get_or_create_session", return_value=fake_session), \
-         patch.object(main_mod, "_get_conn") as mock_conn:
-        cm = MagicMock()
-        cm.__enter__ = MagicMock(return_value=MagicMock())
-        cm.__exit__ = MagicMock(return_value=False)
-        mock_conn.return_value = cm
+    with patch("src.main.OrchestratorAgent", return_value=fake_orchestrator), \
+         patch.object(main_mod, "_get_async_engine") as mock_engine:
+        mock_conn = AsyncMock()
+        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
+        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_conn.execute = AsyncMock()
+        mock_engine.return_value.begin = MagicMock(return_value=mock_conn)
 
         events = []
         async for event in _stream_agent_response("sess-refusal", "query", "data_analyst"):
             events.append(event)
 
-    # With empty output and zero rows, should_refuse should trigger
+    # With zero rows and no SQL artifact, should_refuse should trigger
     has_refusal = any('"refusal": true' in e or '"refusal":true' in e for e in events)
     assert has_refusal, f"Expected refusal event, got: {events}"

@@ -1,8 +1,13 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Inter, Instrument_Serif } from "next/font/google";
 import "./globals.css";
 
-const inter = Inter({ subsets: ["latin"] });
+const inter = Inter({ subsets: ["latin"], variable: "--font-body" });
+const instrumentSerif = Instrument_Serif({
+  weight: ["400"],
+  subsets: ["latin"],
+  variable: "--font-display",
+});
 
 export const metadata: Metadata = {
   title: "LendSmart — Fast, Transparent Loan Decisions",
@@ -17,11 +22,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body className={inter.className}>
+      <body className={`${inter.variable} ${instrumentSerif.variable} font-body`}>
         <div className="min-h-screen flex flex-col">
           <header className="border-b bg-white sticky top-0 z-50">
             <div className="container mx-auto px-4 h-16 flex items-center justify-between">
-              <a href="/" className="flex items-center gap-2 font-bold text-xl text-blue-600">
+              <a href="/" className="flex items-center gap-2 font-bold text-xl text-[#0f172a]">
                 <svg
                   className="w-7 h-7"
                   fill="none"
