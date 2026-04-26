@@ -4,6 +4,26 @@
 
 @layer base {
   :root {
+    /* Brand tokens — applicant portal */
+    --brand-navy:       #0f172a;
+    --brand-navy-mid:   #1e3a5f;
+    --brand-gold:       #b87333;
+    --brand-gold-light: #f5e6d0;
+    --brand-green:      #16a34a;
+    --brand-red:        #dc2626;
+    --brand-amber:      #d97706;
+
+    /* Surfaces */
+    --surface-white:    #ffffff;
+    --surface-cream:    #fafaf8;
+    --surface-light:    #f1f5f9;
+
+    /* Text */
+    --text-primary:     #0f172a;
+    --text-secondary:   #374151;
+    --text-muted:       #6b7280;
+
+    /* shadcn compatibility */
     --background: 0 0% 100%;
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
@@ -33,5 +53,9 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-body, ui-sans-serif), sans-serif;
+  }
+  .font-display {
+    font-family: var(--font-display, Georgia), serif;
   }
 }

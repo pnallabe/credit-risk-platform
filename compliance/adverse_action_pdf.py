@@ -70,6 +70,7 @@ def render_notice_pdf(
         topMargin=inch,
         bottomMargin=inch,
         title="Adverse Action Notice",
+        subject=notice.notice_id,
         author=notice.creditor_name,
     )
 

@@ -58,7 +58,7 @@ async def test_model_documentation_component_complete():
         "validation_status": "PASS",
     }
 
-    with patch("compliance.generate_model_doc.generate_mdr", new_callable=AsyncMock, return_value=mock_mdr):
+    with patch("compliance.generate_model_doc.generate_mdr", return_value=mock_mdr):
         spec = _make_spec(["model_documentation"])
         comp = await build_model_documentation_component(spec, DB_URL)
 
@@ -93,7 +93,7 @@ async def test_policy_snapshots_component_complete():
     mock_store.list_versions.return_value = mock_history
 
     with patch(
-        "compliance.exam_packet_builder.PolicyVersionStore",
+        "decision_engine.policy_version_store.PolicyVersionStore",
         return_value=mock_store,
     ):
         spec = _make_spec(["policy_snapshots"])
@@ -151,8 +151,8 @@ async def test_full_packet_json_no_stubs():
     mock_store.list_versions.return_value = [mock_snapshot]
 
     with (
-        patch("compliance.generate_model_doc.generate_mdr", new_callable=AsyncMock, return_value=mock_mdr),
-        patch("compliance.exam_packet_builder.PolicyVersionStore", return_value=mock_store),
+        patch("compliance.generate_model_doc.generate_mdr", return_value=mock_mdr),
+        patch("decision_engine.policy_version_store.PolicyVersionStore", return_value=mock_store),
         patch("compliance.committee_approval_store.list_approvals", new_callable=AsyncMock, return_value=[]),
         patch("audit.logger.get_audit_records_by_period", new_callable=AsyncMock, return_value=[]),
         patch("monitoring.fair_lending.analyze_fair_lending", return_value={"disparate_impact_ratio": 0.82}),

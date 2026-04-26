@@ -7,8 +7,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY ai-agent/src/ ./src/
 COPY ai-agent/config/ ./config/
+COPY compliance/ ./compliance/
 
-ENV PYTHONPATH=/app/src
+ENV PYTHONPATH=/app
 
 EXPOSE 8082
 

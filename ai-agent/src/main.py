@@ -10,12 +10,24 @@ import hashlib
 import json
 import logging
 import os
-import sqlite3
 import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncGenerator, Optional
+
+from sqlalchemy import create_engine, text as _sa_text
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
+
+import re as _re
+import sys as _sys
+
+# Make compliance/ importable from the project root (two dirs up from src/)
+_sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
+from compliance.prohibited_variables import (
+    check_for_prohibited_variables,
+    ProhibitedVariableViolation,
+)
 
 from .ai_audit_log import log_ai_turn
 from .code_artifact_store import store_artifact
@@ -42,11 +54,10 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from langchain.agents import AgentExecutor, create_react_agent
-from langchain.memory import ConversationSummaryBufferMemory
-from langchain.prompts import PromptTemplate
-from langchain.tools import Tool
 from langchain_openai import ChatOpenAI
+
+from .planner_agent import PlannerAgent, AnalysisPlan
+from .specialist_agents import OrchestratorAgent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -54,65 +65,134 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DATABASE_URL = os.getenv("DATABASE_URL", "decision_audit.db")
+# OV-02: No default — service refuses to start without an explicit PostgreSQL URL.
+DATABASE_URL = os.getenv("DATABASE_URL", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 RATE_LIMIT = os.getenv("RATE_LIMIT", "20/minute")
+
+# OV-03: LLM Cost Guard
+# Maximum tokens allowed in the user query + conversation context before dispatch.
+# Prevents runaway spend when the ReAct loop requests many tool calls.
+MAX_TOKENS_PER_QUERY: int = int(os.getenv("MAX_TOKENS_PER_QUERY", "4000"))
+# Maximum cumulative USD cost per single agent turn (all LLM calls combined).
+# Pricing table: gpt-4o $5/1M input + $15/1M output (May 2025 rates).
+COST_CEILING_USD: float = float(os.getenv("COST_CEILING_USD", "0.50"))
+# Per-model pricing (input $/1M tokens, output $/1M tokens).  Add rows as needed.
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "gpt-4o":         (5.00,  15.00),
+    "gpt-4o-mini":    (0.15,   0.60),
+    "gpt-4-turbo":   (10.00,  30.00),
+    "gpt-3.5-turbo":  (0.50,   1.50),
+}
 
 limiter = Limiter(key_func=get_remote_address)
 
 
 # ---------------------------------------------------------------------------
-# DB helpers
+# DB engine helpers (OV-02)
 # ---------------------------------------------------------------------------
-def _get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(DATABASE_URL)
-    conn.row_factory = sqlite3.Row
-    return conn
+_ASYNC_ENGINE_CACHE: dict[str, AsyncEngine] = {}
+_SYNC_ENGINE_CACHE: dict = {}
 
 
-def _ensure_sessions_table():
-    with _get_conn() as conn:
-        conn.execute("""
+def _normalize_async_url(url: str) -> str:
+    """Bare sqlite paths → sqlite+aiosqlite://; pass postgresql URLs through."""
+    if "://" not in url:
+        return f"sqlite+aiosqlite:///{url}"
+    if url.startswith("sqlite:///") and not url.startswith("sqlite+"):
+        return "sqlite+aiosqlite" + url[6:]
+    return url
+
+
+def _make_sync_url(url: str) -> str:
+    """Derive synchronous (psycopg2 / sqlite3) URL from the async URL."""
+    norm = _normalize_async_url(url)
+    return (
+        norm
+        .replace("postgresql+asyncpg://", "postgresql://")
+        .replace("sqlite+aiosqlite://", "sqlite://")
+    )
+
+
+def _get_async_engine(url: str) -> AsyncEngine:
+    norm = _normalize_async_url(url)
+    if norm not in _ASYNC_ENGINE_CACHE:
+        _ASYNC_ENGINE_CACHE[norm] = create_async_engine(norm, echo=False)
+    return _ASYNC_ENGINE_CACHE[norm]
+
+
+def _get_sync_engine(url: str):
+    sync_url = _make_sync_url(url)
+    if sync_url not in _SYNC_ENGINE_CACHE:
+        _SYNC_ENGINE_CACHE[sync_url] = create_engine(
+            sync_url, echo=False, pool_pre_ping=True
+        )
+    return _SYNC_ENGINE_CACHE[sync_url]
+
+
+async def _ensure_sessions_table() -> None:
+    engine = _get_async_engine(DATABASE_URL)
+    async with engine.begin() as conn:
+        await conn.execute(_sa_text("""
             CREATE TABLE IF NOT EXISTS agent_sessions (
-                session_id TEXT PRIMARY KEY,
-                persona TEXT NOT NULL DEFAULT 'data_analyst',
-                created_at TEXT NOT NULL,
-                last_active TEXT NOT NULL,
-                turn_count INTEGER NOT NULL DEFAULT 0
+                session_id  TEXT    PRIMARY KEY,
+                persona     TEXT    NOT NULL DEFAULT 'data_analyst',
+                created_at  TEXT    NOT NULL,
+                last_active TEXT    NOT NULL,
+                turn_count  INTEGER NOT NULL DEFAULT 0
             )
-        """)
-        conn.execute("""
+        """))
+        await conn.execute(_sa_text("""
             CREATE TABLE IF NOT EXISTS agent_messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT NOT NULL,
-                created_at TEXT NOT NULL,
+                id          SERIAL  PRIMARY KEY,
+                session_id  TEXT    NOT NULL,
+                role        TEXT    NOT NULL,
+                content     TEXT    NOT NULL,
+                created_at  TEXT    NOT NULL,
                 FOREIGN KEY (session_id) REFERENCES agent_sessions(session_id)
             )
-        """)
-        conn.commit()
+        """))
 
 
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
 def _sql_query_tool(query: str) -> str:
-    """Execute a read-only SQL query against the decisions database."""
+    """Execute a read-only SQL query against the decisions database.
+
+    OV-02: Uses SQLAlchemy sync engine (psycopg2 / sqlite3 driver).
+    Called from LangChain's thread-pool executor — sync is correct here.
+    """
     UNSAFE = ("insert", "update", "delete", "drop", "alter", "create", "truncate")
     if any(k in query.lower() for k in UNSAFE):
         _mark_turn_error()
         return "ERROR: Only SELECT queries are allowed."
 
     query_stripped = query.strip()
+
+    # GAP-19: Prohibited variable check — extract identifiers from the query
+    # and scan them against the ECOA/FHA prohibited-variable registry.
+    try:
+        identifiers = {
+            tok.lower(): tok
+            for tok in _re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', query_stripped)
+        }
+        check_for_prohibited_variables(identifiers)
+    except ProhibitedVariableViolation as pv:
+        _mark_turn_error()
+        return (
+            f"ERROR: Query references a prohibited variable '{pv.variable}' "
+            f"(protected basis: {pv.basis}). "
+            "Remove this column from the query before resubmitting."
+        )
     query_hash = hashlib.sha256(query_stripped.encode()).hexdigest()
 
     try:
-        with _get_conn() as conn:
-            cur = conn.execute(query_stripped)
-            rows = cur.fetchmany(200)
-            cols = [d[0] for d in cur.description] if cur.description else []
+        with _get_sync_engine(DATABASE_URL).connect() as conn:
+            result = conn.execute(_sa_text(query_stripped))
+            rows = result.fetchmany(200)
+            cols = list(result.keys())
 
             if not rows:
                 _update_turn_result(
@@ -204,10 +284,11 @@ def _extract_source_table_simple(sql: str) -> Optional[str]:
 def _metrics_tool(_: str) -> str:
     """Fetch latest model performance metrics."""
     try:
-        with _get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM model_metrics ORDER BY recorded_at DESC LIMIT 1"
-            ).fetchone()
+        with _get_sync_engine(DATABASE_URL).connect() as conn:
+            result = conn.execute(
+                _sa_text("SELECT * FROM model_metrics ORDER BY recorded_at DESC LIMIT 1")
+            )
+            row = result.mappings().fetchone()
         if row:
             return json.dumps(dict(row), default=str)
         return json.dumps({"auc": 0.823, "ks": 0.441, "f1": 0.712, "note": "mock"})
@@ -218,10 +299,11 @@ def _metrics_tool(_: str) -> str:
 def _drift_report_tool(_: str) -> str:
     """Fetch the latest data drift report."""
     try:
-        with _get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM drift_reports ORDER BY generated_at DESC LIMIT 1"
-            ).fetchone()
+        with _get_sync_engine(DATABASE_URL).connect() as conn:
+            result = conn.execute(
+                _sa_text("SELECT * FROM drift_reports ORDER BY generated_at DESC LIMIT 1")
+            )
+            row = result.mappings().fetchone()
         if row:
             return json.dumps(dict(row), default=str)
         return json.dumps({"drift_status": "stable", "features_checked": 8, "note": "mock"})
@@ -232,15 +314,70 @@ def _drift_report_tool(_: str) -> str:
 def _fair_lending_tool(_: str) -> str:
     """Fetch the latest fair lending / DIR report."""
     try:
-        with _get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM fair_lending_reports ORDER BY generated_at DESC LIMIT 1"
-            ).fetchone()
+        with _get_sync_engine(DATABASE_URL).connect() as conn:
+            result = conn.execute(
+                _sa_text("SELECT * FROM fair_lending_reports ORDER BY generated_at DESC LIMIT 1")
+            )
+            row = result.mappings().fetchone()
         if row:
             return json.dumps(dict(row), default=str)
         return json.dumps({"dir_score": 0.87, "status": "compliant", "note": "mock"})
     except Exception:
         return json.dumps({"dir_score": 0.87, "status": "compliant", "note": "mock"})
+
+
+# ---------------------------------------------------------------------------
+# OV-03: Token budget helpers
+# ---------------------------------------------------------------------------
+def _count_tokens(text: str, model: str = OPENAI_MODEL) -> int:
+    """Return the number of tokens in *text* for *model* using tiktoken.
+
+    Falls back to a conservative word-count estimate (×1.4) if tiktoken does
+    not have an encoding for the requested model.
+    """
+    try:
+        import tiktoken as _tt
+        try:
+            enc = _tt.encoding_for_model(model)
+        except KeyError:
+            enc = _tt.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    except Exception:
+        # Fallback: rough estimate (1 token ≈ 0.75 words)
+        return int(len(text.split()) * 1.4)
+
+
+def _estimate_cost_usd(input_tokens: int, output_tokens: int, model: str = OPENAI_MODEL) -> float:
+    """Estimate USD cost for *input_tokens* + *output_tokens* for *model*."""
+    price_in, price_out = _MODEL_PRICING.get(model, (5.00, 15.00))
+    return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
+
+
+class BudgetExceededError(Exception):
+    """Raised when a query would exceed MAX_TOKENS_PER_QUERY or COST_CEILING_USD."""
+
+
+def _check_token_budget(message: str, chat_history: str = "") -> None:
+    """Raise BudgetExceededError if the combined input exceeds MAX_TOKENS_PER_QUERY.
+
+    This is a pre-dispatch guard — called before the LLM is ever invoked.
+    """
+    total_tokens = _count_tokens(message) + _count_tokens(chat_history)
+    if total_tokens > MAX_TOKENS_PER_QUERY:
+        raise BudgetExceededError(
+            f"Query exceeds the token budget: {total_tokens} tokens (limit={MAX_TOKENS_PER_QUERY}). "
+            "Shorten the query or clear the conversation history."
+        )
+
+
+def _check_cost_ceiling(input_tokens: int, output_tokens: int = 0) -> None:
+    """Raise BudgetExceededError if estimated cost exceeds COST_CEILING_USD."""
+    cost = _estimate_cost_usd(input_tokens, output_tokens)
+    if cost > COST_CEILING_USD:
+        raise BudgetExceededError(
+            f"Estimated cost ${cost:.4f} exceeds per-turn ceiling ${COST_CEILING_USD:.2f}. "
+            "Reduce query length or increase COST_CEILING_USD."
+        )
 
 
 def _chart_generator_tool(spec: str) -> str:
@@ -259,106 +396,29 @@ def _report_generator_tool(report_type: str) -> str:
     })
 
 
-TOOLS = [
-    Tool(name="sql_query_tool", func=_sql_query_tool, description=(
-        "Run a read-only SQL SELECT query against the decisions database. "
-        "Input: SQL string. Useful for ad-hoc data analysis."
-    )),
-    Tool(name="metrics_tool", func=_metrics_tool, description=(
-        "Retrieve the latest model performance metrics (AUC, KS, F1). Input: empty string."
-    )),
-    Tool(name="drift_report_tool", func=_drift_report_tool, description=(
-        "Fetch the latest data drift report including PSI per feature. Input: empty string."
-    )),
-    Tool(name="fair_lending_tool", func=_fair_lending_tool, description=(
-        "Fetch the latest fair lending report including DIR score. Input: empty string."
-    )),
-    Tool(name="chart_generator_tool", func=_chart_generator_tool, description=(
-        "Generate a chart specification for frontend rendering. "
-        "Input: JSON string describing chart type, data, and title."
-    )),
-    Tool(name="report_generator_tool", func=_report_generator_tool, description=(
-        "Generate a full structured report. Input: report type string "
-        "(portfolio|model_health|fair_lending|drift)."
-    )),
-]
-
 # ---------------------------------------------------------------------------
-# Personas
+# Tool registry — passed to OrchestratorAgent so specialists can call tools
+# while retaining access to module-level turn-tracking state.
 # ---------------------------------------------------------------------------
-PERSONA_PROMPTS = {
-    "data_analyst": (
-        "You are a data analyst assistant for a credit risk platform. "
-        "You help credit risk analysts, underwriters, and data scientists understand "
-        "model performance, data drift, and portfolio metrics. "
-        "Be precise, cite numbers, and offer to run SQL queries when appropriate. "
-        "When you write SQL show it in ```sql blocks."
-    ),
-    "business_analyst": (
-        "You are a business analyst assistant for a credit risk platform. "
-        "You help executives and compliance officers understand the business impact "
-        "of credit decisions, regulatory compliance, and portfolio health. "
-        "Avoid technical jargon. Summarize findings in plain English. "
-        "Use percentages, dollar amounts, and trend language."
-    ),
+_TOOL_REGISTRY: dict[str, object] = {
+    "sql_query_tool":        _sql_query_tool,
+    "metrics_tool":          _metrics_tool,
+    "drift_report_tool":     _drift_report_tool,
+    "fair_lending_tool":     _fair_lending_tool,
+    "chart_generator_tool":  _chart_generator_tool,
+    "report_generator_tool": _report_generator_tool,
 }
 
-REACT_TEMPLATE = """{persona}
-
-You have access to the following tools:
-{tools}
-
-Use the following format:
-Question: the input question
-Thought: you should always think about what to do
-Action: the action to take, should be one of [{tool_names}]
-Action Input: the input to the action
-Observation: the result of the action
-... (this Thought/Action/Action Input/Observation can repeat N times)
-Thought: I now know the final answer
-Final Answer: the final answer to the original input question
-
-Previous conversation:
-{chat_history}
-
-Question: {input}
-Thought:{agent_scratchpad}"""
-
-
-def _build_agent_executor(persona: str, memory: ConversationSummaryBufferMemory) -> AgentExecutor:
-    llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0, streaming=True, openai_api_key=OPENAI_API_KEY)
-    prompt = PromptTemplate.from_template(
-        REACT_TEMPLATE.replace("{persona}", PERSONA_PROMPTS.get(persona, PERSONA_PROMPTS["data_analyst"]))
-    )
-    agent = create_react_agent(llm=llm, tools=TOOLS, prompt=prompt)
-    return AgentExecutor(
-        agent=agent,
-        tools=TOOLS,
-        memory=memory,
-        verbose=True,
-        handle_parsing_errors=True,
-        max_iterations=8,
-    )
-
 
 # ---------------------------------------------------------------------------
-# In-memory session store
+# In-memory session store (conversation history for context continuity)
 # ---------------------------------------------------------------------------
-_SESSIONS: dict[str, dict] = {}  # session_id -> {executor, memory, persona}
+_SESSIONS: dict[str, dict] = {}  # session_id -> {history: str, persona: str}
 
 
-def _get_or_create_session(session_id: str, persona: str = "data_analyst") -> dict:
-    if session_id not in _SESSIONS:
-        llm = ChatOpenAI(model=OPENAI_MODEL, temperature=0, openai_api_key=OPENAI_API_KEY)
-        memory = ConversationSummaryBufferMemory(
-            llm=llm,
-            max_token_limit=2000,
-            memory_key="chat_history",
-            return_messages=False,
-        )
-        executor = _build_agent_executor(persona, memory)
-        _SESSIONS[session_id] = {"executor": executor, "memory": memory, "persona": persona}
-    return _SESSIONS[session_id]
+def _get_session_history(session_id: str) -> str:
+    """Return the truncated conversation history for *session_id* (last ~1500 chars)."""
+    return _SESSIONS.get(session_id, {}).get("history", "")[-1500:]
 
 
 # ---------------------------------------------------------------------------
@@ -366,7 +426,29 @@ def _get_or_create_session(session_id: str, persona: str = "data_analyst") -> di
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    _ensure_sessions_table()
+    # OV-02: Fail fast — reject empty or non-PostgreSQL DATABASE_URL at boot.
+    if not DATABASE_URL:
+        raise RuntimeError(
+            "[OV-02] DATABASE_URL is not set. "
+            "Configure a postgresql+asyncpg:// connection string before starting this service."
+        )
+    if "sqlite" in DATABASE_URL.lower() or "://" not in DATABASE_URL:
+        raise RuntimeError(
+            f"[OV-02] DATABASE_URL '{DATABASE_URL}' is not a valid PostgreSQL URL. "
+            "Set DATABASE_URL to a postgresql+asyncpg:// connection string."
+        )
+    # OV-03: Fail fast — reject missing or placeholder OpenAI API key at boot.
+    if not OPENAI_API_KEY:
+        raise RuntimeError(
+            "[OV-03] OPENAI_API_KEY is not set. "
+            "Configure a valid OpenAI API key before starting this service."
+        )
+    if OPENAI_API_KEY in ("sk-placeholder", "your-key-here", "REPLACE_ME"):
+        raise RuntimeError(
+            "[OV-03] OPENAI_API_KEY is still a placeholder value. "
+            "Set a valid OpenAI API key before deploying."
+        )
+    await _ensure_sessions_table()
     yield
 
 
@@ -447,77 +529,78 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
             "tools_called": [],
         }
 
-    session = _get_or_create_session(session_id, persona)
-    executor: AgentExecutor = session["executor"]
-    queue: asyncio.Queue[str | None] = asyncio.Queue()
-    _answer_parts: list[str] = []
-    _plan_steps: list[dict] = []
-
-    async def _run():
-        try:
-            async for chunk in executor.astream({"input": message}):
-                if "output" in chunk:
-                    answer = chunk["output"]
-                    _answer_parts.append(answer)
-                    for token_word in answer.split(" "):
-                        await queue.put(json.dumps({"token": token_word + " "}))
-                elif isinstance(chunk, dict) and "intermediate_steps" in chunk:
-                    for step in chunk["intermediate_steps"]:
-                        tool_name = step[0].tool if hasattr(step[0], "tool") else "tool"
-                        tool_input = step[0].tool_input if hasattr(step[0], "tool_input") else ""
-                        observation = step[1] if len(step) > 1 else ""
-                        # Strip internal prefixes from observation before storing
-                        obs_str = str(observation)
-                        if obs_str.startswith("__GROUNDED__"):
-                            obs_str = obs_str[len("__GROUNDED__"):].lstrip("\n")
-                        elif obs_str.startswith("__ERROR__"):
-                            obs_str = obs_str[len("__ERROR__"):].lstrip("\n")
-                        _plan_steps.append({
-                            "thought": "",
-                            "action": tool_name,
-                            "action_input": str(tool_input),
-                            "observation": obs_str,
-                        })
-                        with _TURN_LOCK:
-                            entry = _TURN_SQL_RESULTS.get(turn_id)
-                            if entry is not None:
-                                entry["tools_called"].append(tool_name)
-                        # Strip internal prefixes before echoing tool_call event
-                        await queue.put(json.dumps({"tool_call": tool_name}))
-        except Exception as exc:
-            await queue.put(json.dumps({"error": str(exc)}))
-        finally:
-            await queue.put(None)
-
-    task = asyncio.create_task(_run())
-
+    # OV-03: Pre-dispatch token budget + cost ceiling guard
+    _history_text = _get_session_history(session_id)
     try:
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            # Strip internal grounding prefixes from token events before forwarding
-            try:
-                parsed = json.loads(item)
-                if "token" in parsed:
-                    tok = parsed["token"]
-                    if tok.startswith("__GROUNDED__"):
-                        tok = tok[len("__GROUNDED__"):].lstrip("\n")
-                        parsed["token"] = tok
-                    elif tok.startswith("__ERROR__"):
-                        tok = tok[len("__ERROR__"):].lstrip("\n")
-                        parsed["token"] = tok
-                    item = json.dumps(parsed)
-            except Exception:
-                pass
-            yield f"data: {item}\n\n"
-    finally:
-        task.cancel()
+        _check_token_budget(message, _history_text)
+        _input_tokens = _count_tokens(message) + _count_tokens(_history_text)
+        _check_cost_ceiling(_input_tokens)
+    except BudgetExceededError as _budget_err:
+        _ACTIVE_TURN_ID.reset(token)
+        _TURN_SQL_RESULTS.pop(turn_id, None)
+        yield f"data: {json.dumps({'error': str(_budget_err), 'error_type': 'budget_exceeded'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    # --- GAP-19: Stage 1 — Planner generates structured AnalysisPlan ---
+    _planner = PlannerAgent(model=OPENAI_MODEL, api_key=OPENAI_API_KEY)
+    analysis_plan: AnalysisPlan = await _planner.plan(message)
+    yield f"data: {json.dumps({'plan': analysis_plan.model_dump()})}\n\n"
+
+    # --- GAP-19: Stage 2 — Orchestrator dispatches plan to specialist agents ---
+    _orchestrator = OrchestratorAgent(
+        model=OPENAI_MODEL,
+        api_key=OPENAI_API_KEY,
+        tool_registry=_TOOL_REGISTRY,
+    )
+    _answer_parts: list[str] = []
+    _python_blocks_from_synthesis: list[str] = []
+    _plan_steps: list[dict] = [
+        {"step_id": s.step_id, "description": s.description, "tool": s.tool}
+        for s in analysis_plan.steps
+    ]
+    artifact_ids: list[str] = []
+
+    async for event in _orchestrator.astream(analysis_plan, message, _history_text):
+        event_type = event.get("event")
+
+        if event_type == "specialist_start":
+            # Track tool calls for confidence scoring
+            with _TURN_LOCK:
+                entry = _TURN_SQL_RESULTS.get(turn_id)
+                if entry is not None:
+                    entry["tools_called"].append(event["tool"])
+            yield f"data: {json.dumps({'tool_call': event['tool'], 'step_id': event['step_id'], 'description': event['description']})}\n\n"
+
+        elif event_type == "specialist_complete":
+            # Annotate the plan step with the specialist's observation
+            for ps in _plan_steps:
+                if ps.get("step_id") == event.get("step_id"):
+                    ps["observation"] = event.get("interpretation", "")
+                    if event.get("sql_executed"):
+                        ps["sql_executed"] = event["sql_executed"]
+            yield f"data: {json.dumps({'specialist_complete': {'step_id': event['step_id'], 'tool': event['tool'], 'error': event.get('error', False)}})}\n\n"
+
+        elif event_type == "synthesis_token":
+            tok = event.get("token", "")
+            # Strip internal grounding prefixes before forwarding
+            if tok.startswith("__GROUNDED__"):
+                tok = tok[len("__GROUNDED__"):].lstrip("\n")
+            elif tok.startswith("__ERROR__"):
+                tok = tok[len("__ERROR__"):].lstrip("\n")
+            if tok:
+                _answer_parts.append(tok)
+                yield f"data: {json.dumps({'token': tok})}\n\n"
+
+        elif event_type == "synthesis_complete":
+            _python_blocks_from_synthesis = event.get("python_code", [])
 
     # --- Collect turn data and compute confidence ---
     _ACTIVE_TURN_ID.reset(token)
     with _TURN_LOCK:
         turn_data = _TURN_SQL_RESULTS.pop(turn_id, {})
+
+    assembled_answer = "".join(_answer_parts)
 
     factors = ConfidenceFactors(
         row_count=turn_data.get("row_count", 0),
@@ -529,7 +612,6 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
     conf = compute_confidence(factors)
 
     # Persist SQL code artifact (fire-and-forget)
-    artifact_ids: list[str] = []
     if turn_data.get("sql_executed"):
         try:
             artifact = await store_artifact(
@@ -542,22 +624,46 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
             )
             artifact_ids.append(artifact.artifact_id)
         except Exception as exc:
-            logger.error("Failed to store code artifact: %s", exc)
+            logger.error("Failed to store SQL artifact: %s", exc)
+
+    # GAP-19: Persist Python artifacts extracted by the synthesizer
+    for py_content in _python_blocks_from_synthesis:
+        try:
+            py_artifact = await store_artifact(
+                db_url=DATABASE_URL,
+                session_id=session_id,
+                turn_id=turn_id,
+                artifact_type="python",
+                content=py_content,
+            )
+            artifact_ids.append(py_artifact.artifact_id)
+        except Exception as exc:
+            logger.error("Failed to store Python artifact: %s", exc)
+
+    # Update in-memory conversation history for context continuity
+    _SESSIONS.setdefault(session_id, {"history": "", "persona": persona})
+    _SESSIONS[session_id]["history"] += (
+        f"\nUser: {message}\nAssistant: {assembled_answer[:600]}"
+    )
 
     # Persist messages to agent_messages
-    assembled_answer = " ".join(_answer_parts)
     ts = datetime.now(timezone.utc).isoformat()
     try:
-        with _get_conn() as conn:
-            conn.execute(
-                "INSERT INTO agent_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, "user", message, ts),
+        async with _get_async_engine(DATABASE_URL).begin() as conn:
+            await conn.execute(
+                _sa_text(
+                    "INSERT INTO agent_messages (session_id, role, content, created_at) "
+                    "VALUES (:sid, :role, :content, :ts)"
+                ),
+                {"sid": session_id, "role": "user", "content": message, "ts": ts},
             )
-            conn.execute(
-                "INSERT INTO agent_messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                (session_id, "assistant", assembled_answer, ts),
+            await conn.execute(
+                _sa_text(
+                    "INSERT INTO agent_messages (session_id, role, content, created_at) "
+                    "VALUES (:sid, :role, :content, :ts)"
+                ),
+                {"sid": session_id, "role": "assistant", "content": assembled_answer, "ts": ts},
             )
-            conn.commit()
     except Exception as exc:
         logger.error("Failed to persist agent messages: %s", exc)
 
@@ -626,18 +732,22 @@ async def health():
 @limiter.limit(RATE_LIMIT)
 async def create_session(req: SessionCreateRequest, request: Request):
     session_id = str(uuid.uuid4())
-    _get_or_create_session(session_id, req.persona)
+    # Pre-register session so history is available on first turn
+    _SESSIONS.setdefault(session_id, {"history": "", "persona": req.persona})
 
     ts = datetime.utcnow().isoformat()
     try:
-        with _get_conn() as conn:
-            conn.execute(
-                "INSERT INTO agent_sessions VALUES (?, ?, ?, ?, ?)",
-                (session_id, req.persona, ts, ts, 0),
+        async with _get_async_engine(DATABASE_URL).begin() as conn:
+            await conn.execute(
+                _sa_text(
+                    "INSERT INTO agent_sessions "
+                    "(session_id, persona, created_at, last_active, turn_count) "
+                    "VALUES (:sid, :persona, :ts, :ts, 0)"
+                ),
+                {"sid": session_id, "persona": req.persona, "ts": ts},
             )
-            conn.commit()
     except Exception:
-        pass  # SQLite may not be fully set up in all envs
+        pass  # Non-fatal: in-memory session is already registered
 
     return SessionCreateResponse(session_id=session_id, persona=req.persona)
 
@@ -661,11 +771,15 @@ async def chat(req: ChatRequest, request: Request):
 @app.get("/agent/sessions/{session_id}/history")
 async def get_history(session_id: str):
     try:
-        with _get_conn() as conn:
-            rows = conn.execute(
-                "SELECT role, content, created_at FROM agent_messages WHERE session_id = ? ORDER BY id",
-                (session_id,),
-            ).fetchall()
+        async with _get_async_engine(DATABASE_URL).connect() as conn:
+            result = await conn.execute(
+                _sa_text(
+                    "SELECT role, content, created_at FROM agent_messages "
+                    "WHERE session_id = :sid ORDER BY id"
+                ),
+                {"sid": session_id},
+            )
+            rows = result.mappings().all()
         return [dict(r) for r in rows]
     except Exception:
         return []
@@ -675,10 +789,15 @@ async def get_history(session_id: str):
 async def delete_session(session_id: str):
     _SESSIONS.pop(session_id, None)
     try:
-        with _get_conn() as conn:
-            conn.execute("DELETE FROM agent_sessions WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM agent_messages WHERE session_id = ?", (session_id,))
-            conn.commit()
+        async with _get_async_engine(DATABASE_URL).begin() as conn:
+            await conn.execute(
+                _sa_text("DELETE FROM agent_sessions WHERE session_id = :sid"),
+                {"sid": session_id},
+            )
+            await conn.execute(
+                _sa_text("DELETE FROM agent_messages WHERE session_id = :sid"),
+                {"sid": session_id},
+            )
     except Exception:
         pass
     return {"deleted": True}

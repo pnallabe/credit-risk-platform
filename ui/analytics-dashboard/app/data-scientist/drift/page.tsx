@@ -61,34 +61,43 @@ export default function DriftPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {report.features.map((f) => (
-                <tr key={f.feature} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-mono text-xs text-gray-700">{f.feature}</td>
-                  <td className="px-4 py-3">
-                    <span className="flex items-center gap-1.5">
-                      <TrafficLight status={f.status} />
-                      <span className="capitalize text-xs text-gray-600">{f.status}</span>
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-800">{f.psi.toFixed(4)}</td>
-                  <td className="px-4 py-3 text-gray-600">{f.ks_pvalue.toFixed(4)}</td>
-                  <td className="px-4 py-3 w-40">
-                    <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${
-                          f.status === "stable" ? "bg-green-500" : f.status === "minor" ? "bg-amber-500" : "bg-red-500"
-                        }`}
-                        style={{ width: `${Math.min(f.psi / 0.3, 1) * 100}%` }}
-                      />
-                    </div>
-                    <div className="flex justify-between text-xs text-gray-400 mt-0.5">
-                      <span>0</span>
-                      <span>0.10</span>
-                      <span>0.25</span>
-                    </div>
+              {report.features.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="px-4 py-16 text-center">
+                    <p className="text-sm font-medium text-gray-500">All models stable.</p>
+                    <p className="text-xs text-gray-400 mt-1">No drift detected in this period. Next check scheduled automatically.</p>
                   </td>
                 </tr>
-              ))}
+              ) : (
+                report.features.map((f) => (
+                  <tr key={f.feature} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-mono text-xs text-gray-700">{f.feature}</td>
+                    <td className="px-4 py-3">
+                      <span className="flex items-center gap-1.5">
+                        <TrafficLight status={f.status} />
+                        <span className="capitalize text-xs text-gray-600">{f.status}</span>
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 font-medium text-gray-800">{f.psi.toFixed(4)}</td>
+                    <td className="px-4 py-3 text-gray-600">{f.ks_pvalue.toFixed(4)}</td>
+                    <td className="px-4 py-3 w-40">
+                      <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full rounded-full ${
+                            f.status === "stable" ? "bg-green-500" : f.status === "minor" ? "bg-amber-500" : "bg-red-500"
+                          }`}
+                          style={{ width: `${Math.min(f.psi / 0.3, 1) * 100}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-400 mt-0.5">
+                        <span>0</span>
+                        <span>0.10</span>
+                        <span>0.25</span>
+                      </div>
+                    </td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
