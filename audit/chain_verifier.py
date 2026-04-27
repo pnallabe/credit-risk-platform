@@ -248,7 +248,35 @@ def _recompute_ai_hash(row: dict) -> str:
     log_id = row.get("log_id", "")
     logged_at = row.get("logged_at", "")
     canonical = _rebuild_ai_canonical(row)
-    raw = previous_hash + "|" + log_id + "|" + logged_at + "|" + canonical
+    # GAP-22: include array fields in hash (same order as ai_audit_log._compute_chain_hash)
+    import json as _json
+    code_artifact_uris = row.get("code_artifact_uris") or []
+    bq_job_ids = row.get("bq_job_ids") or []
+    code_zip_uri = row.get("code_zip_uri") or ""
+    code_sha256_hashes = row.get("code_sha256_hashes") or []
+    # Deserialize JSON strings if needed
+    if isinstance(code_artifact_uris, str):
+        try:
+            code_artifact_uris = _json.loads(code_artifact_uris)
+        except Exception:
+            code_artifact_uris = []
+    if isinstance(bq_job_ids, str):
+        try:
+            bq_job_ids = _json.loads(bq_job_ids)
+        except Exception:
+            bq_job_ids = []
+    if isinstance(code_sha256_hashes, str):
+        try:
+            code_sha256_hashes = _json.loads(code_sha256_hashes)
+        except Exception:
+            code_sha256_hashes = []
+    extension = "|".join([
+        _json.dumps(sorted(code_artifact_uris), sort_keys=True),
+        _json.dumps(sorted(bq_job_ids), sort_keys=True),
+        code_zip_uri,
+        _json.dumps(sorted(code_sha256_hashes), sort_keys=True),
+    ])
+    raw = previous_hash + "|" + log_id + "|" + logged_at + "|" + canonical + "|" + extension
     return hashlib.sha256(raw.encode()).hexdigest()
 
 

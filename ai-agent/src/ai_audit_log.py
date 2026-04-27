@@ -76,9 +76,21 @@ CREATE TABLE IF NOT EXISTS ai_agent_audit_log (
     logged_at           TEXT    NOT NULL,
     record_hash         TEXT    NOT NULL,
     previous_hash       TEXT    NOT NULL,
-    hash_algorithm      TEXT    NOT NULL DEFAULT 'sha256'
+    hash_algorithm      TEXT    NOT NULL DEFAULT 'sha256',
+    code_artifact_uris  TEXT,
+    bq_job_ids          TEXT,
+    code_zip_uri        TEXT,
+    code_sha256_hashes  TEXT
 )
 """
+
+# Migration: add new array columns to existing DBs
+_MIGRATION_STMTS = [
+    "ALTER TABLE ai_agent_audit_log ADD COLUMN code_artifact_uris TEXT",
+    "ALTER TABLE ai_agent_audit_log ADD COLUMN bq_job_ids TEXT",
+    "ALTER TABLE ai_agent_audit_log ADD COLUMN code_zip_uri TEXT",
+    "ALTER TABLE ai_agent_audit_log ADD COLUMN code_sha256_hashes TEXT",
+]
 
 
 async def _ensure_schema(db_url: str) -> None:
@@ -88,6 +100,12 @@ async def _ensure_schema(db_url: str) -> None:
     engine = _get_engine(db_url)
     async with engine.begin() as conn:
         await conn.execute(_sa_text(_CREATE_AI_AUDIT_TABLE))
+        # Alembic-style migration guard for existing DBs
+        for stmt in _MIGRATION_STMTS:
+            try:
+                await conn.execute(_sa_text(stmt))
+            except Exception:
+                pass  # Column already exists
     _SCHEMA_DONE.add(norm)
 
 
@@ -124,11 +142,22 @@ def _compute_chain_hash(
     result_hash: Optional[str],
     confidence_score: Optional[float],
     answer_text: Optional[str],
+    code_artifact_uris: Optional[list] = None,
+    bq_job_ids: Optional[list] = None,
+    code_zip_uri: Optional[str] = None,
+    code_sha256_hashes: Optional[list] = None,
 ) -> str:
     canonical = _build_canonical_ai(
         log_id, logged_at, query_text, result_hash, confidence_score, answer_text
     )
-    raw = previous_hash + "|" + log_id + "|" + logged_at + "|" + canonical
+    # Append new array fields for determinism (sorted for stability)
+    extension = "|".join([
+        json.dumps(sorted(code_artifact_uris or []), sort_keys=True),
+        json.dumps(sorted(bq_job_ids or []), sort_keys=True),
+        code_zip_uri or "",
+        json.dumps(sorted(code_sha256_hashes or []), sort_keys=True),
+    ])
+    raw = previous_hash + "|" + log_id + "|" + logged_at + "|" + canonical + "|" + extension
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -173,6 +202,10 @@ class AIAgentAuditRecord:
     logged_at: str
     record_hash: str
     previous_hash: str
+    code_artifact_uris: Optional[list] = None
+    bq_job_ids: Optional[list] = None
+    code_zip_uri: Optional[str] = None
+    code_sha256_hashes: Optional[list] = None
 
 
 def _mapping_to_record(row) -> AIAgentAuditRecord:
@@ -198,6 +231,10 @@ def _mapping_to_record(row) -> AIAgentAuditRecord:
         partition_date=row["partition_date"],
         logged_at=row["logged_at"],
         record_hash=row["record_hash"],
+        code_artifact_uris=json.loads(row["code_artifact_uris"]) if row["code_artifact_uris"] else None,
+        bq_job_ids=json.loads(row["bq_job_ids"]) if row["bq_job_ids"] else None,
+        code_zip_uri=row["code_zip_uri"] if "code_zip_uri" in row.keys() else None,
+        code_sha256_hashes=json.loads(row["code_sha256_hashes"]) if row["code_sha256_hashes"] else None,
         previous_hash=row["previous_hash"],
     )
 
@@ -225,6 +262,10 @@ async def log_ai_turn(
     bq_job_id: Optional[str] = None,
     source_table: Optional[str] = None,
     partition_date: Optional[str] = None,
+    code_artifact_uris: Optional[list[str]] = None,
+    bq_job_ids: Optional[list[str]] = None,
+    code_zip_uri: Optional[str] = None,
+    code_sha256_hashes: Optional[list[str]] = None,
 ) -> AIAgentAuditRecord:
     """
     Insert one row into ai_agent_audit_log with a computed hash chain.
@@ -243,6 +284,9 @@ async def log_ai_turn(
     plan_text = json.dumps(plan_steps) if plan_steps else None
     tools_called_str = json.dumps(tools_called) if tools_called else None
     code_artifact_ref = ",".join(code_artifact_ids) if code_artifact_ids else None
+    code_artifact_uris_str = json.dumps(code_artifact_uris or [])
+    bq_job_ids_str = json.dumps(bq_job_ids or [])
+    code_sha256_hashes_str = json.dumps(code_sha256_hashes or [])
 
     async with engine.begin() as conn:
         # Fetch previous hash in the same transaction for chain integrity
@@ -255,6 +299,10 @@ async def log_ai_turn(
             result_hash=result_hash,
             confidence_score=confidence_score,
             answer_text=answer_text,
+            code_artifact_uris=code_artifact_uris,
+            bq_job_ids=bq_job_ids,
+            code_zip_uri=code_zip_uri,
+            code_sha256_hashes=code_sha256_hashes,
         )
         await conn.execute(
             _sa_text("""
@@ -263,13 +311,15 @@ async def log_ai_turn(
                     plan_text, tools_called, sql_executed, result_hash, query_hash,
                     code_artifact_ref, confidence_score, confidence_label, answer_text,
                     grounded, bq_job_id, source_table, partition_date,
-                    logged_at, record_hash, previous_hash, hash_algorithm
+                    logged_at, record_hash, previous_hash, hash_algorithm,
+                    code_artifact_uris, bq_job_ids, code_zip_uri, code_sha256_hashes
                 ) VALUES (
                     :log_id, :session_id, :turn_id, :tenant_id, :persona, :query_text,
                     :plan_text, :tools_called, :sql_executed, :result_hash, :query_hash,
                     :code_artifact_ref, :confidence_score, :confidence_label, :answer_text,
                     :grounded, :bq_job_id, :source_table, :partition_date,
-                    :logged_at, :record_hash, :previous_hash, :hash_algorithm
+                    :logged_at, :record_hash, :previous_hash, :hash_algorithm,
+                    :code_artifact_uris, :bq_job_ids, :code_zip_uri, :code_sha256_hashes
                 )
             """),
             {
@@ -284,6 +334,10 @@ async def log_ai_turn(
                 "partition_date": partition_date, "logged_at": logged_at,
                 "record_hash": record_hash, "previous_hash": previous_hash,
                 "hash_algorithm": "sha256",
+                "code_artifact_uris": code_artifact_uris_str,
+                "bq_job_ids": bq_job_ids_str,
+                "code_zip_uri": code_zip_uri,
+                "code_sha256_hashes": code_sha256_hashes_str,
             },
         )
 
@@ -310,7 +364,39 @@ async def log_ai_turn(
         logged_at=logged_at,
         record_hash=record_hash,
         previous_hash=previous_hash,
+        code_artifact_uris=code_artifact_uris or [],
+        bq_job_ids=bq_job_ids or [],
+        code_zip_uri=code_zip_uri,
+        code_sha256_hashes=code_sha256_hashes or [],
     )
+
+
+async def get_ai_audit_records_by_session(
+    session_id: str,
+    db_url: str,
+) -> list[dict]:
+    """Return all audit records for a session as dicts with array fields deserialized.
+    Consumed by compliance/exam_packet_builder.py build_ai_agent_audit_component()."""
+    await _ensure_schema(db_url)
+    engine = _get_engine(db_url)
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            _sa_text(
+                "SELECT * FROM ai_agent_audit_log "
+                "WHERE session_id = :sid ORDER BY logged_at ASC"
+            ),
+            {"sid": session_id},
+        )
+        rows = result.mappings().all()
+
+    records = []
+    for row in rows:
+        d = dict(row)
+        for col in ("code_artifact_uris", "bq_job_ids", "code_sha256_hashes"):
+            raw = d.get(col)
+            d[col] = json.loads(raw) if raw else []
+        records.append(d)
+    return records
 
 
 async def get_ai_audit_records(
