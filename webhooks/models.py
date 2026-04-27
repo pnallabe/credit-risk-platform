@@ -15,13 +15,17 @@ from typing import Literal, Optional
 # ---------------------------------------------------------------------------
 
 EventType = Literal[
+    "agent.answer.ready",
     "decision.approved",
     "decision.rejected",
     "decision.manual_review",
     "batch.complete",
     "batch.failed",
     "adverse_action.generated",
+    "hallucination.detected",
     "model.drift_alert",
+    "semantic.schema_drift",
+    "semantic.term_proposed",
 ]
 
 # ---------------------------------------------------------------------------
@@ -114,3 +118,42 @@ def sign_payload(secret: str, payload_bytes: bytes) -> str:
     """
     digest = hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
     return f"sha256={digest}"
+
+
+# ---------------------------------------------------------------------------
+# Event data payload dataclasses (GAP-23)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class AgentAnswerReadyData:
+    """Payload for agent.answer.ready events."""
+    session_id: str
+    query_id: str
+    confidence: str          # HIGH | MEDIUM | LOW
+    code_artifact_count: int
+
+
+@dataclass
+class HallucinationDetectedData:
+    """Payload for hallucination.detected events."""
+    session_id: str
+    query_id: str
+    suppressed_sentence_count: int
+    hallucination_count: int
+
+
+@dataclass
+class SemanticSchemaDriftData:
+    """Payload for semantic.schema_drift events."""
+    tenant_id: str
+    table_name: str
+    registered_hash: str
+    live_hash: str
+
+
+@dataclass
+class SemanticTermProposedData:
+    """Payload for semantic.term_proposed events."""
+    tenant_id: str
+    term: str
+    proposed_by: str

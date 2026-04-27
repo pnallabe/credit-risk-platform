@@ -45,9 +45,11 @@ Usage
 """
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
 import logging
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -124,6 +126,86 @@ class PolicyVersionNotFoundError(Exception):
 
 
 # ---------------------------------------------------------------------------
+# RSA-2048 PSS signing helpers (PV-007)
+# ---------------------------------------------------------------------------
+
+
+def sign_version(version_payload: dict, private_key_pem: bytes) -> str:
+    """Sign the canonical JSON representation of *version_payload* using RSA-2048 PSS.
+
+    Parameters
+    ----------
+    version_payload:
+        Arbitrary dict describing the policy version (fields are sorted for determinism).
+    private_key_pem:
+        PEM-encoded RSA private key bytes.
+
+    Returns
+    -------
+    str
+        Base64-encoded RSA-PSS signature string.
+    """
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    canonical = json.dumps(version_payload, sort_keys=True, separators=(",", ":")).encode()
+    private_key = serialization.load_pem_private_key(private_key_pem, password=None)
+    signature = private_key.sign(
+        canonical,
+        padding.PSS(
+            mgf=padding.MGF1(hashes.SHA256()),
+            salt_length=padding.PSS.MAX_LENGTH,
+        ),
+        hashes.SHA256(),
+    )
+    return base64.b64encode(signature).decode("utf-8")
+
+
+def verify_version_signature(
+    version_payload: dict,
+    signature_b64: str,
+    public_key_pem: bytes,
+) -> bool:
+    """Verify the RSA-PSS signature of *version_payload*.
+
+    Parameters
+    ----------
+    version_payload:
+        The same dict that was passed to ``sign_version()``.
+    signature_b64:
+        Base64-encoded signature string returned by ``sign_version()``.
+    public_key_pem:
+        PEM-encoded RSA public key bytes corresponding to the signing key.
+
+    Returns
+    -------
+    bool
+        ``True`` if the signature is valid; ``False`` otherwise (including
+        any ``InvalidSignature`` or decoding errors).
+    """
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    try:
+        canonical = json.dumps(version_payload, sort_keys=True, separators=(",", ":")).encode()
+        sig_bytes = base64.b64decode(signature_b64)
+        public_key = serialization.load_pem_public_key(public_key_pem)
+        public_key.verify(
+            sig_bytes,
+            canonical,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return True
+    except (InvalidSignature, Exception):
+        return False
+
+
+# ---------------------------------------------------------------------------
 # Store
 # ---------------------------------------------------------------------------
 
@@ -165,7 +247,9 @@ class PolicyVersionStore:
                     effective_from  TEXT NOT NULL,
                     superseded_at   TEXT,
                     is_active       INTEGER NOT NULL DEFAULT 1,
-                    created_at      TEXT NOT NULL
+                    created_at      TEXT NOT NULL,
+                    rsa_signature   TEXT,
+                    signing_key_id  TEXT
                 )
             """)
             conn.execute(
@@ -174,6 +258,16 @@ class PolicyVersionStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_pv_active ON policy_versions(is_active)"
             )
+            # Migration guard: add RSA signing columns to existing databases
+            for col, ddl in [
+                ("rsa_signature",  "ALTER TABLE policy_versions ADD COLUMN rsa_signature TEXT"),
+                ("signing_key_id", "ALTER TABLE policy_versions ADD COLUMN signing_key_id TEXT"),
+            ]:
+                try:
+                    conn.execute(ddl)
+                    logger.info("policy_versions: added column '%s'", col)
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
             conn.commit()
 
     @staticmethod
@@ -264,6 +358,33 @@ class PolicyVersionStore:
             )
             conn.commit()
             new_id = cur.lastrowid
+
+        # Optional RSA-PSS signing (PV-007)
+        _pem_env = os.environ.get("POLICY_SIGNING_KEY_PEM", "")
+        rsa_signature: Optional[str] = None
+        signing_key_id: Optional[str] = None
+        if _pem_env:
+            try:
+                version_payload = {
+                    "version_tag": version_tag,
+                    "parameters_json": json.dumps(parameters, default=str, sort_keys=True),
+                    "author": author,
+                    "note": note,
+                    "effective_from": eff,
+                    "created_at": now,
+                }
+                rsa_signature = sign_version(version_payload, _pem_env.encode())
+                signing_key_id = os.environ.get("POLICY_SIGNING_KEY_ID", "default")
+            except Exception as _sign_exc:
+                logger.warning("RSA signing failed (stored NULL): %s", _sign_exc)
+
+        if rsa_signature is not None:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "UPDATE policy_versions SET rsa_signature=?, signing_key_id=? WHERE id=?",
+                    (rsa_signature, signing_key_id, new_id),
+                )
+                conn.commit()
 
         logger.info(
             "Policy version %s (id=%d) published by %s — '%s'",

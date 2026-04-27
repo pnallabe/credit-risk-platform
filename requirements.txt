@@ -57,3 +57,9 @@ jsonschema>=4.21.0
 
 # P3 — Prometheus metrics sink (PROMPT-09)
 prometheus-client>=0.20.0
+
+# GAP-24 — GraphQL Analytics API
+strawberry-graphql[fastapi]>=0.220.0
+
+# GAP-25 — Policy Version RSA Signing
+cryptography>=42.0.0

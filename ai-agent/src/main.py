@@ -801,3 +801,463 @@ async def delete_session(session_id: str):
     except Exception:
         pass
     return {"deleted": True}
+
+
+# ===========================================================================
+# Phase 5 (GAP-21) — PRD-compliant /api/v1 endpoint group
+# ===========================================================================
+
+import io
+import zipfile
+from datetime import datetime as _dt, timezone as _tz
+from typing import Literal
+
+# ---------------------------------------------------------------------------
+# v1 Schemas (additive — do not modify existing schemas above)
+# ---------------------------------------------------------------------------
+
+class CodeArtifactItem(BaseModel):
+    artifact_id: str
+    kind: str          # "sql" | "python"
+    uri: str
+    sha256: str
+
+
+class AgentQueryRequest(BaseModel):
+    session_id: str
+    query: str
+    tenant_id: str
+    output_format: Literal["json", "pdf", "excel", "both"] = "json"
+
+
+class AgentQueryResponse(BaseModel):
+    query_id: str
+    session_id: str
+    answer: str
+    confidence: str
+    code_artifacts: list[CodeArtifactItem]
+    plan: Optional[dict]
+    hallucination_count: int
+    status: Literal["success", "blocked", "error"]
+    blocked_reason: Optional[str]
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    tenant_id: str
+    turn_count: int
+    created_at: str
+    last_activity: str
+    history: list[dict]
+
+
+class AuditPackageRequest(BaseModel):
+    session_id: str
+    tenant_id: str
+
+
+# ---------------------------------------------------------------------------
+# Lazy imports for new agents (graceful if some module is missing)
+# ---------------------------------------------------------------------------
+
+def _get_compliance_gate():
+    from .compliance_gate_agent import ComplianceGateAgent
+    return ComplianceGateAgent()
+
+
+def _get_validator():
+    from .validator_agent import ValidatorAgent
+    return ValidatorAgent()
+
+
+def _get_formatter():
+    from .formatter_agent import FormatterAgent, CodeArtifactsMissingError
+    return FormatterAgent(), CodeArtifactsMissingError
+
+
+# ---------------------------------------------------------------------------
+# Helper: fetch code artifacts for a query_id from artifact store
+# ---------------------------------------------------------------------------
+
+async def _fetch_code_artifacts_for_query(query_id: str) -> list[CodeArtifactItem]:
+    """Return CodeArtifactItem list for a given query_id (uses turn_id as query_id here)."""
+    try:
+        async with _get_async_engine(DATABASE_URL).connect() as conn:
+            result = await conn.execute(
+                _sa_text(
+                    "SELECT artifact_id, artifact_type, content_hash "
+                    "FROM agent_code_artifacts WHERE turn_id = :qid"
+                ),
+                {"qid": query_id},
+            )
+            rows = result.mappings().all()
+        items = []
+        for r in rows:
+            items.append(CodeArtifactItem(
+                artifact_id=r["artifact_id"],
+                kind=r["artifact_type"],
+                uri=f"local://artifacts/{r['artifact_id']}",
+                sha256=r["content_hash"],
+            ))
+        return items
+    except Exception:
+        return []
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/agent/query
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/agent/query", response_model=AgentQueryResponse)
+async def agent_query_v1(req: AgentQueryRequest):
+    """
+    PRD-compliant multi-agent query pipeline:
+    ComplianceGate → Planner → Orchestrator → QueryBuilder →
+    Validator → Formatter → AuditLog → Webhook
+    """
+    query_id = str(uuid.uuid4())
+
+    # Step 1: Compliance gate
+    gate = _get_compliance_gate()
+    gate_decision = gate.evaluate(req.query, req.tenant_id)
+    gate.log_gate_decision(gate_decision, req.session_id)
+
+    if not gate_decision.allowed:
+        return AgentQueryResponse(
+            query_id=query_id,
+            session_id=req.session_id,
+            answer="",
+            confidence="LOW",
+            code_artifacts=[],
+            plan=None,
+            hallucination_count=0,
+            status="blocked",
+            blocked_reason=gate_decision.refusal_message,
+        )
+
+    # Steps 2–6: Run pipeline via existing SSE logic (simplified sync path)
+    try:
+        turn_id = query_id
+        token_ctx = _ACTIVE_TURN_ID.set(turn_id)
+        with _TURN_LOCK:
+            _TURN_SQL_RESULTS[turn_id] = {
+                "row_count": 0,
+                "sql_executed": "",
+                "query_hash": "",
+                "result_hash": "",
+                "source_table": None,
+                "error": False,
+                "tools_called": [],
+            }
+
+        # Planner
+        _planner = PlannerAgent(model=OPENAI_MODEL, api_key=OPENAI_API_KEY)
+        analysis_plan: AnalysisPlan = await _planner.plan(req.query)
+        plan_dict = analysis_plan.model_dump()
+
+        # Orchestrator — collect full answer
+        _orchestrator = OrchestratorAgent(
+            model=OPENAI_MODEL,
+            api_key=OPENAI_API_KEY,
+            tool_registry=_TOOL_REGISTRY,
+        )
+        answer_parts: list[str] = []
+        python_blocks: list[str] = []
+        plan_steps: list[dict] = [
+            {"step_id": s.step_id, "description": s.description, "tool": s.tool}
+            for s in analysis_plan.steps
+        ]
+
+        async for event in _orchestrator.astream(analysis_plan, req.query, ""):
+            ev_type = event.get("event")
+            if ev_type == "synthesis_token":
+                tok = event.get("token", "")
+                for prefix in ("__GROUNDED__", "__ERROR__"):
+                    if tok.startswith(prefix):
+                        tok = tok[len(prefix):].lstrip("\n")
+                if tok:
+                    answer_parts.append(tok)
+            elif ev_type == "synthesis_complete":
+                python_blocks = event.get("python_code", [])
+
+        _ACTIVE_TURN_ID.reset(token_ctx)
+        with _TURN_LOCK:
+            turn_data = _TURN_SQL_RESULTS.pop(turn_id, {})
+
+        assembled = "".join(answer_parts)
+
+        # Steps 5–6: Confidence + artifacts
+        factors = ConfidenceFactors(
+            row_count=turn_data.get("row_count", 0),
+            query_error=bool(turn_data.get("error", False)),
+            empty_result=(turn_data.get("row_count", 0) == 0),
+            tools_called=turn_data.get("tools_called", []),
+            has_sql_artifact=bool(turn_data.get("sql_executed")),
+        )
+        conf = compute_confidence(factors)
+
+        artifact_ids: list[str] = []
+        if turn_data.get("sql_executed"):
+            try:
+                art = await store_artifact(
+                    db_url=DATABASE_URL,
+                    session_id=req.session_id,
+                    turn_id=turn_id,
+                    artifact_type="sql",
+                    content=turn_data["sql_executed"],
+                    source_table=turn_data.get("source_table"),
+                )
+                artifact_ids.append(art.artifact_id)
+            except Exception as exc:
+                logger.error("Failed to store SQL artifact (v1 query): %s", exc)
+
+        for py_content in python_blocks:
+            try:
+                py_art = await store_artifact(
+                    db_url=DATABASE_URL,
+                    session_id=req.session_id,
+                    turn_id=turn_id,
+                    artifact_type="python",
+                    content=py_content,
+                )
+                artifact_ids.append(py_art.artifact_id)
+            except Exception as exc:
+                logger.error("Failed to store Python artifact (v1 query): %s", exc)
+
+        # Step 7: ValidatorAgent
+        result_rows: list[dict] = []
+        validator = _get_validator()
+        val_result = validator.reconcile(assembled, result_rows)
+        validator.emit_hallucination_webhook(val_result, req.session_id, query_id)
+        validated_narrative = val_result.validated_narrative
+
+        # Step 8: FormatterAgent
+        formatter, CodeArtifactsMissingError = _get_formatter()
+        artifact_uris = [f"local://artifacts/{aid}" for aid in artifact_ids]
+        try:
+            formatted = formatter.format(
+                validated_narrative=validated_narrative,
+                code_artifact_uris=artifact_uris,
+                confidence=conf.label,
+                metadata={
+                    "session_id": req.session_id,
+                    "query_id": query_id,
+                    "tenant_id": req.tenant_id,
+                    "timestamp": _dt.now(_tz.utc).isoformat(),
+                },
+            )
+        except CodeArtifactsMissingError as exc:
+            return AgentQueryResponse(
+                query_id=query_id,
+                session_id=req.session_id,
+                answer=str(exc),
+                confidence=conf.label,
+                code_artifacts=[],
+                plan=plan_dict,
+                hallucination_count=val_result.hallucination_count,
+                status="error",
+                blocked_reason=str(exc),
+            )
+
+        # Step 9: Audit log (fire-and-forget)
+        try:
+            asyncio.create_task(log_ai_turn(
+                db_url=DATABASE_URL,
+                session_id=req.session_id,
+                turn_id=turn_id,
+                persona="api_v1",
+                query_text=req.query,
+                answer_text=validated_narrative or None,
+                plan_steps=plan_steps or None,
+                tools_called=list(set(factors.tools_called)) or None,
+                sql_executed=turn_data.get("sql_executed") or None,
+                result_hash=turn_data.get("result_hash") or None,
+                query_hash=turn_data.get("query_hash") or None,
+                code_artifact_ids=artifact_ids or None,
+                confidence_score=conf.score,
+                confidence_label=conf.label,
+                grounded=not should_refuse(conf),
+                tenant_id=req.tenant_id,
+                code_artifact_uris=artifact_uris or None,
+            ))
+        except Exception as exc:
+            logger.error("Failed to schedule audit log (v1 query): %s", exc)
+
+        # Step 10: Emit AGENT_ANSWER_READY webhook (fire-and-forget)
+        try:
+            def _emit_answer_ready() -> None:
+                try:
+                    from webhooks.dispatcher import WebhookDispatcher
+                    from webhooks.store import WebhookStore
+                    store = WebhookStore(db_url=DATABASE_URL)
+                    dispatcher = WebhookDispatcher(store=store)
+                    dispatcher.dispatch(req.tenant_id, "agent.answer.ready", {
+                        "event": "agent.answer.ready",
+                        "data": {
+                            "session_id": req.session_id,
+                            "query_id": query_id,
+                            "confidence": conf.label,
+                            "code_artifact_count": len(artifact_ids),
+                        },
+                    })
+                except Exception:
+                    pass
+            import threading as _thr
+            _thr.Thread(target=_emit_answer_ready, daemon=True).start()
+        except Exception:
+            pass
+
+        code_artifact_items = [
+            CodeArtifactItem(
+                artifact_id=aid,
+                kind="sql" if i == 0 else "python",
+                uri=f"local://artifacts/{aid}",
+                sha256="",
+            )
+            for i, aid in enumerate(artifact_ids)
+        ]
+
+        return AgentQueryResponse(
+            query_id=query_id,
+            session_id=req.session_id,
+            answer=formatted.answer_text,
+            confidence=conf.label,
+            code_artifacts=code_artifact_items,
+            plan=plan_dict,
+            hallucination_count=val_result.hallucination_count,
+            status="success",
+            blocked_reason=None,
+        )
+
+    except Exception as exc:
+        logger.error("Unhandled error in /api/v1/agent/query: %s", exc)
+        return AgentQueryResponse(
+            query_id=query_id,
+            session_id=req.session_id,
+            answer=f"Internal error: {exc}",
+            confidence="LOW",
+            code_artifacts=[],
+            plan=None,
+            hallucination_count=0,
+            status="error",
+            blocked_reason=str(exc),
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/agent/sessions/{session_id}
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/agent/sessions/{session_id}", response_model=SessionSummary)
+async def get_session_summary_v1(session_id: str):
+    """Return session summary including turn count, timestamps, and history."""
+    try:
+        async with _get_async_engine(DATABASE_URL).connect() as conn:
+            sess_result = await conn.execute(
+                _sa_text(
+                    "SELECT session_id, persona, created_at, last_active, turn_count "
+                    "FROM agent_sessions WHERE session_id = :sid"
+                ),
+                {"sid": session_id},
+            )
+            sess = sess_result.mappings().fetchone()
+    except Exception:
+        sess = None
+
+    history = _SESSIONS.get(session_id, {}).get("history", "")
+    # Build turn list from in-memory history
+    history_turns = [{"content": history}] if history else []
+
+    if sess is None:
+        return SessionSummary(
+            session_id=session_id,
+            tenant_id="unknown",
+            turn_count=0,
+            created_at=_dt.now(_tz.utc).isoformat(),
+            last_activity=_dt.now(_tz.utc).isoformat(),
+            history=history_turns,
+        )
+
+    return SessionSummary(
+        session_id=session_id,
+        tenant_id=sess.get("persona", "unknown"),
+        turn_count=sess.get("turn_count", 0),
+        created_at=sess.get("created_at", ""),
+        last_activity=sess.get("last_active", ""),
+        history=history_turns,
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/agent/audit-package
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/agent/audit-package")
+async def create_audit_package_v1(req: AuditPackageRequest):
+    """Return audit package with all AI audit records for a session."""
+    try:
+        from .ai_audit_log import get_ai_audit_records
+        records = await get_ai_audit_records(req.session_id, DATABASE_URL)
+    except Exception as exc:
+        logger.error("Failed to fetch audit records: %s", exc)
+        records = []
+
+    return {
+        "session_id": req.session_id,
+        "tenant_id": req.tenant_id,
+        "audit_records": records,
+        "generated_at": _dt.now(_tz.utc).isoformat(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/agent/query/{query_id}/code-artifacts
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/agent/query/{query_id}/code-artifacts", response_model=list[CodeArtifactItem])
+async def get_code_artifacts_v1(query_id: str):
+    """Return all code artifacts stored for query_id (mapped via turn_id)."""
+    return await _fetch_code_artifacts_for_query(query_id)
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/agent/query/{query_id}/code-archive.zip
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/agent/query/{query_id}/code-archive.zip")
+async def get_code_archive_v1(query_id: str):
+    """Return an in-memory ZIP archive of all code artifacts for query_id."""
+    try:
+        async with _get_async_engine(DATABASE_URL).connect() as conn:
+            result = await conn.execute(
+                _sa_text(
+                    "SELECT artifact_id, artifact_type, content, content_hash "
+                    "FROM agent_code_artifacts WHERE turn_id = :qid"
+                ),
+                {"qid": query_id},
+            )
+            rows = result.mappings().all()
+    except Exception:
+        rows = []
+
+    buf = io.BytesIO()
+    manifest = {"query_id": query_id, "artifacts": []}
+
+    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for row in rows:
+            ext = "sql" if row["artifact_type"] == "sql" else "py"
+            filename = f"{row['artifact_id']}_{row['artifact_type']}.{ext}"
+            zf.writestr(filename, row["content"] or "")
+            manifest["artifacts"].append({
+                "id": row["artifact_id"],
+                "kind": row["artifact_type"],
+                "sha256": row["content_hash"],
+            })
+        zf.writestr("manifest.json", json.dumps(manifest, indent=2))
+
+    buf.seek(0)
+    return StreamingResponse(
+        content=buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="code-archive-{query_id}.zip"'},
+    )

@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.ai_audit_log import (
     log_ai_turn,
     get_ai_audit_records,
+    get_ai_audit_records_by_session,
 )
 import src.ai_audit_log as ai_audit_log_module
 
@@ -171,3 +172,128 @@ async def test_retention_schedule_contains_ai_audit_log():
     from compliance.retention_policy import RETENTION_SCHEDULE
     assert "audit.ai_agent_audit_log" in RETENTION_SCHEDULE
     assert RETENTION_SCHEDULE["audit.ai_agent_audit_log"] == 7
+
+
+# ---------------------------------------------------------------------------
+# GAP-22: Array fields tests
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_log_ai_turn_array_fields(tmp_path):
+    """log_ai_turn() with list args stores/retrieves correctly via get_ai_audit_records_by_session."""
+    db_url = str(tmp_path / "test_arr.db")
+    session_id = str(uuid.uuid4())
+
+    record = await log_ai_turn(
+        db_url=db_url,
+        session_id=session_id,
+        turn_id=str(uuid.uuid4()),
+        persona="data_analyst",
+        query_text="SELECT 1",
+        answer_text="Done.",
+        plan_steps=None,
+        tools_called=None,
+        sql_executed="SELECT 1",
+        result_hash=None,
+        query_hash=None,
+        code_artifact_ids=None,
+        confidence_score=0.9,
+        confidence_label="high",
+        grounded=True,
+        code_artifact_uris=["gs://bucket/a.sql", "gs://bucket/b.py"],
+        bq_job_ids=["job-001", "job-002"],
+        code_zip_uri="gs://bucket/archive.zip",
+        code_sha256_hashes=["aabbcc", "ddeeff"],
+    )
+
+    dicts = await get_ai_audit_records_by_session(session_id, db_url)
+    assert len(dicts) == 1
+    d = dicts[0]
+    assert d["code_artifact_uris"] == ["gs://bucket/a.sql", "gs://bucket/b.py"]
+    assert d["bq_job_ids"] == ["job-001", "job-002"]
+    assert d["code_zip_uri"] == "gs://bucket/archive.zip"
+    assert d["code_sha256_hashes"] == ["aabbcc", "ddeeff"]
+
+
+@pytest.mark.asyncio
+async def test_hash_chain_integrity_array_fields(tmp_path):
+    """Hash chain still verifies after the array field extension."""
+    db_path = str(tmp_path / "test_chain.db")
+    db_url = f"sqlite+aiosqlite:///{db_path}"
+    session_id = str(uuid.uuid4())
+
+    for i in range(3):
+        await log_ai_turn(
+            db_url=db_url,
+            session_id=session_id,
+            turn_id=str(uuid.uuid4()),
+            persona="data_analyst",
+            query_text=f"SELECT {i}",
+            answer_text="ok",
+            plan_steps=None,
+            tools_called=None,
+            sql_executed=f"SELECT {i}",
+            result_hash=None,
+            query_hash=None,
+            code_artifact_ids=None,
+            confidence_score=0.8,
+            confidence_label="medium",
+            grounded=True,
+            code_artifact_uris=[f"gs://b/q{i}.sql"],
+            bq_job_ids=[f"job-{i}"],
+            code_zip_uri=None,
+            code_sha256_hashes=[],
+        )
+
+    result = await verify_ai_agent_chain(db_url, session_id=session_id)
+    assert result.verified is True
+    assert result.rows_checked == 3
+
+
+@pytest.mark.asyncio
+async def test_migration_idempotent(tmp_path):
+    """Starting with old schema (no array cols), _ensure_schema adds them without error."""
+    import aiosqlite
+
+    db_path = str(tmp_path / "old_schema.db")
+
+    # Create table with OLD schema (no array columns)
+    old_ddl = """
+    CREATE TABLE IF NOT EXISTS ai_agent_audit_log (
+        log_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL DEFAULT 'default',
+        persona TEXT NOT NULL,
+        query_text TEXT NOT NULL,
+        plan_text TEXT, tools_called TEXT, sql_executed TEXT,
+        result_hash TEXT, query_hash TEXT, code_artifact_ref TEXT,
+        confidence_score REAL, confidence_label TEXT, answer_text TEXT,
+        grounded INTEGER NOT NULL DEFAULT 1,
+        bq_job_id TEXT, source_table TEXT, partition_date TEXT,
+        logged_at TEXT NOT NULL, record_hash TEXT NOT NULL,
+        previous_hash TEXT NOT NULL,
+        hash_algorithm TEXT NOT NULL DEFAULT 'sha256'
+    )
+    """
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(old_ddl)
+        await db.commit()
+
+    # Now run ensure_schema — should add the 4 new columns
+    import src.ai_audit_log as m
+    # Clear cache so _ensure_schema runs fresh
+    norm = m._normalize_url(db_path)
+    m._SCHEMA_DONE.discard(norm)
+    if norm in m._ENGINE_CACHE:
+        await m._ENGINE_CACHE[norm].dispose()
+        del m._ENGINE_CACHE[norm]
+
+    await m._ensure_schema(db_path)
+
+    # Verify columns exist
+    async with aiosqlite.connect(db_path) as db:
+        cursor = await db.execute("PRAGMA table_info(ai_agent_audit_log)")
+        cols = {row[1] for row in await cursor.fetchall()}
+
+    for col in ("code_artifact_uris", "bq_job_ids", "code_zip_uri", "code_sha256_hashes"):
+        assert col in cols, f"Missing column: {col}"
