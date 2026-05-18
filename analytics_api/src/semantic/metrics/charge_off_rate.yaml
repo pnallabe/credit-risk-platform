@@ -1,0 +1,36 @@
+metric: ChargeOffRate
+description: "Percentage of outstanding balance charged off as losses"
+category: loss_indicator
+unit: percentage
+requires:
+  entities: [Loan]
+  attributes:
+    - Loan.charge_off_rate
+    - Loan.period_end_date
+formula:
+  type: ratio
+  numerator:
+    filter: null
+    aggregation: "AVG(charge_off_rate)"
+  denominator:
+    filter: null
+    aggregation: null
+  multiply_by: 100
+variants: []
+dimensions:
+  - product_type
+  - quarter
+  - period_end_date
+sla:
+  freshness_hours: 24
+  expected_range: [0.0, 20.0]
+preferred_source: credit_risk.org_income_statement
+bq_sql: |
+  SELECT
+    CAST(TIMESTAMP_MICROS(CAST(period_end_date / 1000 AS INT64)) AS DATE) AS report_date,
+    product_type,
+    charge_off_rate,
+    net_charge_off_rate,
+    recovery_rate
+  FROM `ai-risk-workflow.credit_risk.org_income_statement`
+  ORDER BY period_end_date DESC

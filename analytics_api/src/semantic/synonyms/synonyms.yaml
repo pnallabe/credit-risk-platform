@@ -1,0 +1,151 @@
+synonyms:
+  # --- Loan attributes ---
+  Loan.loan_id:
+    - loan number
+    - account number
+    - acct_id
+    - loan identifier
+    - ln_id
+  Loan.current_balance:
+    - outstanding balance
+    - remaining balance
+    - current bal
+    - balance owed
+    - curr_outstanding
+    - book value
+  Loan.loan_status:
+    - account status
+    - acct_status
+    - status_cd
+    - loan state
+  Loan.principal_amount:
+    - original balance
+    - origination amount
+    - loan amount
+    - funded amount
+    - orig_principal
+  Loan.delinquency_rate:
+    - delinquency rate
+    - delinquency
+    - DPD rate
+    - past due rate
+    - late payment rate
+    - bad accounts
+    - 30 DPD
+    - 60 DPD
+    - 90 DPD
+    - delinquency percentage
+  Loan.charge_off_rate:
+    - charge off rate
+    - charge-off rate
+    - charge-off
+    - chargeoff
+    - bad debt rate
+    - write-off rate
+    - NCO rate
+    - net charge off
+    - net charge-off
+    - NCO
+  Loan.product_type:
+    - loan type
+    - product
+    - product category
+    - product_type_cd
+    - product code
+
+  # --- Customer attributes ---
+  Customer.fico_score:
+    - credit score
+    - FICO
+    - FICO score
+    - bureau score
+    - credit rating
+    - fico_score_at_origination
+  Customer.annual_income:
+    - income
+    - annual income
+    - yearly income
+    - gross income
+  Customer.dti:
+    - debt to income
+    - debt-to-income
+    - DTI
+    - dti ratio
+  Customer.decision_outcome:
+    - decision
+    - approval decision
+    - underwriting decision
+    - outcome
+  Customer.fico_tier:
+    - FICO tier
+    - credit tier
+    - score tier
+    - credit band
+
+  # --- Metrics ---
+  LoanExposure:
+    - loan exposure
+    - exposure
+    - portfolio exposure
+    - total outstanding
+    - total outstanding balance
+    - book value
+    - outstanding portfolio
+    - portfolio balance
+    - total balance
+    - outstanding loan balance
+  ApprovalRate:
+    - approval rate
+    - acceptance rate
+    - pass rate
+    - approved percentage
+    - approvals
+    - approval %
+    - approve rate
+  DelinquencyRate:
+    - delinquency rate
+    - delinquency
+    - DPD rate
+    - past due rate
+    - late payment rate
+    - bad accounts
+    - 30+ DPD
+    - 30-DPD rate
+  ChargeOffRate:
+    - charge off rate
+    - charge-off rate
+    - charge-off
+    - bad debt rate
+    - write-off rate
+    - NCO rate
+    - net charge off
+    - net charge-off
+    - chargeoff
+  UtilizationRate:
+    - utilization rate
+    - utilization
+    - credit utilization
+    - util rate
+    - credit util
+
+  # --- Entities ---
+  Loan:
+    - loan
+    - loans
+    - funded loan
+    - funded loans
+    - personal loan
+    - personal loans
+  Customer:
+    - customer
+    - customers
+    - borrower
+    - borrowers
+    - applicant
+    - applicants
+  Transaction:
+    - transaction
+    - transactions
+    - payment
+    - payments
+    - payment event

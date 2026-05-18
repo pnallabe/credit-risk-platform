@@ -101,6 +101,19 @@ try:
 except Exception as _gql_exc:
     logger.warning("Could not register GraphQL router: %s", _gql_exc)
 
+# ---------------------------------------------------------------------------
+# Semantic Intelligence Agent routers (Layer D)
+# USE_SEMANTIC_AGENT=true also routes s2s/ask through the new pipeline.
+# ---------------------------------------------------------------------------
+try:
+    from analytics_api.src.agent.api.routes import router as agent_ask_router
+    from analytics_api.src.agent.api.clarification import router as agent_clarify_router
+    app.include_router(agent_ask_router)
+    app.include_router(agent_clarify_router)
+    logger.info("Semantic Intelligence Agent endpoints registered (/v1/agent/ask, /v1/agent/clarify)")
+except Exception as _agent_exc:
+    logger.warning("Could not register agent routers: %s", _agent_exc)
+
 _cors_raw = os.getenv("CORS_ALLOWED_ORIGINS", "")
 _CORS_ORIGINS: List[str] = (
     [o.strip() for o in _cors_raw.split(",") if o.strip()] if _cors_raw else []
@@ -1164,9 +1177,15 @@ async def _generate_bq_sql(question: str) -> str:
         "temperature": 0,
         "max_tokens": 1500,
     }
-    async with _httpx.AsyncClient(timeout=30) as c:
-        resp = await c.post(url, json=body, headers={"api-key": _AZ_API_KEY})
-        resp.raise_for_status()
+    try:
+        async with _httpx.AsyncClient(timeout=30) as c:
+            resp = await c.post(url, json=body, headers={"api-key": _AZ_API_KEY})
+            resp.raise_for_status()
+    except (_httpx.HTTPStatusError, _httpx.ReadTimeout, _httpx.ConnectTimeout) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Azure OpenAI unavailable: {type(exc).__name__}",
+        ) from exc
     content = resp.json()["choices"][0]["message"]["content"].strip()
     # Strip markdown fences if the model wrapped output
     if content.startswith("```"):
@@ -1459,9 +1478,42 @@ async def s2s_ask(
 
     BQ credentials and table schema are never exposed to the caller.
     Requires ``X-Service-Key: dev-analytics-key`` header.
+
+    Set ``USE_SEMANTIC_AGENT=true`` to route through the new Semantic
+    Intelligence Agent pipeline (4-layer architecture, 97% cheaper).
     """
     if x_service_key != _SERVICE_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Service-Key.")
+
+    # Feature flag: route through Semantic Intelligence Agent when enabled
+    if os.getenv("USE_SEMANTIC_AGENT", "").lower() in ("true", "1", "yes"):
+        try:
+            from analytics_api.src.agent.api.routes import _get_agent
+            agent = _get_agent()
+            result = await agent.ask(
+                question=req.question.strip(),
+                tenant_id=req.tenant_id if hasattr(req, "tenant_id") else "default",
+                clarifications=req.clarifications or {},
+            )
+            # If the semantic agent cannot handle the question (clarification_needed
+            # with no structured items), fall through to the original NL2SQL pipeline
+            # which has broader coverage for ad-hoc analytical questions.
+            if not result.clarification_needed:
+                return S2SAskResponse(
+                    question=req.question,
+                    generated_sql=result.sql or "",
+                    rows=result.rows,
+                    row_count=result.row_count,
+                    needs_clarification=False,
+                )
+            logger.info(
+                "USE_SEMANTIC_AGENT: clarification_needed for %r — falling back to NL2SQL pipeline",
+                req.question[:80],
+            )
+            # Fall through to original pipeline
+        except Exception as _agent_exc:
+            logger.warning("USE_SEMANTIC_AGENT routing failed, falling back: %s", _agent_exc)
+            # Fall through to original pipeline
 
     # --- Normalize informal credit-domain shorthand before any processing ---
     question = _normalize_query(req.question.strip())

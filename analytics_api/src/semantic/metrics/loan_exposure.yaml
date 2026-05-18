@@ -1,0 +1,44 @@
+metric: LoanExposure
+description: "Total outstanding principal balance representing credit risk"
+category: portfolio_metric
+unit: currency
+requires:
+  entities: [Loan]
+  attributes:
+    - Loan.current_balance
+    - Loan.remaining_balance
+    - Loan.origination_date
+formula:
+  type: sum
+  numerator:
+    filter: null
+    aggregation: "SUM(current_balance)"
+  denominator:
+    filter: null
+    aggregation: null
+  multiply_by: 1.0
+dimensions:
+  - product_type
+  - origination_date
+  - fico_tier
+  - state
+sla:
+  freshness_hours: 1
+  expected_range: [0.0, 999999999999.0]
+preferred_source: credit_risk.personal_loans_funded
+bq_sql: |
+  SELECT
+    DATE_TRUNC(origination_date, MONTH) AS period,
+    product_code AS product_type,
+    SUM(current_balance) AS total_exposure
+  FROM `ai-risk-workflow.credit_risk.personal_loans_funded`
+  GROUP BY period, product_type
+  ORDER BY period DESC
+bq_sql_timeseries: |
+  SELECT
+    DATE_TRUNC(TIMESTAMP_MICROS(CAST(period_month / 1000 AS INT64)), MONTH) AS period,
+    product_type,
+    SUM(remaining_balance) AS total_exposure
+  FROM `ai-risk-workflow.credit_risk.loan_monthly_ledger`
+  GROUP BY period, product_type
+  ORDER BY period

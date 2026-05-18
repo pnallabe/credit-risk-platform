@@ -146,3 +146,4 @@ batch_results_*.json
 stress_test_results.db
 webhooks.db
 batch_jobs.db
+.venv311/
