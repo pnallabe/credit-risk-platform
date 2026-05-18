@@ -1,0 +1,45 @@
+metric: DelinquencyRate
+description: "Percentage of portfolio with payments overdue by 30+ days"
+category: credit_risk
+unit: percentage
+requires:
+  entities: [Loan]
+  attributes:
+    - Loan.delinquency_rate
+    - Loan.period_end_date
+formula:
+  type: ratio
+  numerator:
+    filter: null
+    aggregation: "AVG(delinquency_rate)"
+  denominator:
+    filter: null
+    aggregation: null
+  multiply_by: 100
+variants:
+  - name: 30_DPD
+    description: "Loans 30+ days past due"
+    filter: "`30dpd_rate`"
+  - name: 60_DPD
+    description: "Loans 60+ days past due"
+    filter: "`60dpd_rate`"
+  - name: 90_DPD
+    description: "Loans 90+ days past due"
+    filter: "`90dpd_rate`"
+dimensions:
+  - product_type
+  - period_end_date
+sla:
+  freshness_hours: 4
+  expected_range: [0.0, 30.0]
+preferred_source: credit_risk.org_balance_sheet
+bq_sql: |
+  SELECT
+    CAST(TIMESTAMP_MICROS(CAST(period_end_date / 1000 AS INT64)) AS DATE) AS report_date,
+    product_type,
+    delinquency_rate,
+    `30dpd_rate`,
+    `60dpd_rate`,
+    `90dpd_rate`
+  FROM `ai-risk-workflow.credit_risk.org_balance_sheet`
+  ORDER BY period_end_date DESC
