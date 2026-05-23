@@ -22,7 +22,7 @@ dimensions:
 sla:
   freshness_hours: 4
   expected_range: [0.0, 100.0]
-preferred_source: credit_risk.cc_account_monthly_economics
+preferred_source: credit_risk.cc_account_monthly_economics  # also in CreditCardStatement entity
 bq_sql: |
   SELECT
     DATE_TRUNC(TIMESTAMP_MICROS(CAST(period_month / 1000 AS INT64)), MONTH) AS period,

@@ -1,0 +1,54 @@
+entity: CreditCardLimitEvent
+description: "A credit limit change event — increase, decrease, or closure"
+sources:
+  - name: credit_risk_model_dev.cc_credit_limit_events
+    join_key: event_id
+    freshness_sla_hours: 4
+primary_key: event_id
+attributes:
+  event_id:
+    type: string
+    description: "Unique identifier for the limit change event"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: event_id
+  origination_id:
+    type: string
+    description: "Foreign key to CreditCardAccount"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: origination_id
+  customer_id:
+    type: string
+    description: "Foreign key to the card holder"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: customer_id
+  event_date:
+    type: date
+    description: "Date the limit change took effect"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: event_date
+  event_type:
+    type: string
+    description: "Type of limit change"
+    allowed_values: [INCREASE, DECREASE, CLOSURE, REINSTATEMENT]
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: event_type
+  previous_limit_usd:
+    type: decimal
+    description: "Credit limit before the event"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: previous_limit_usd
+  new_limit_usd:
+    type: decimal
+    description: "Credit limit after the event"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: new_limit_usd
+  trigger:
+    type: string
+    description: "What triggered the limit change (e.g. ANNUAL_REVIEW, CUSTOMER_REQUEST, RISK_POLICY)"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: trigger
+  bureau_score_at_event:
+    type: integer
+    description: "Bureau score at the time of the limit change"
+    mappings:
+      credit_risk_model_dev.cc_credit_limit_events: bureau_score_at_event
