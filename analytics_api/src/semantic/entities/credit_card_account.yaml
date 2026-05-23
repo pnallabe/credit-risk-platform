@@ -36,7 +36,7 @@ attributes:
       credit_risk_model_dev.cc_originations: origination_date
   orig_date:
     type: integer
-    description: "Origination date as integer epoch (production dataset)"
+    description: "Origination date stored as INT64 nanosecond epoch in production dataset. Use TIMESTAMP_MICROS(CAST(orig_date / 1000 AS INT64)) to convert to TIMESTAMP for date grouping. Prefer origination_date from credit_risk_model_dev.cc_originations for time-series queries."
     mappings:
       credit_risk.cc_origination_with_decisions: orig_date
   product:
