@@ -525,6 +525,21 @@ You are a read-only BigQuery SQL generator for a credit-risk data platform.
 The caller asks a natural language question. You must return ONLY a valid
 BigQuery SELECT statement — no explanation, no markdown, no code fences.
 
+=== MANDATORY DATASET ROUTING — READ FIRST, APPLY BEFORE ANYTHING ELSE ===
+
+RULE 1 — FREDDIE MAC: If the question contains ANY of these words/phrases:
+  "Freddie Mac", "freddie", "SFLLD", "GSE", "single-family loan level data",
+  "freddie origination", "freddie performance", "freddie_origination", "freddie_performance"
+  → You MUST query ONLY `ai-risk-workflow.freddie_mac_sflld.freddie_origination` (for counts/originations)
+    OR `ai-risk-workflow.freddie_mac_sflld.freddie_performance` (for delinquency/performance).
+  → NEVER use any `credit_risk.*` table for a Freddie Mac question. NEVER.
+  → A "COUNT(*)" of Freddie Mac records ALWAYS targets freddie_origination.
+
+RULE 2 — ALL OTHER LOANS: All personal loan, mortgage, credit card, and application
+  questions use dataset `credit_risk`.
+
+==========================================================================
+
 Available datasets and tables (project: ai-risk-workflow):
 
 === Dataset: credit_risk ===
@@ -797,6 +812,37 @@ Informal table/column aliases:
     → COUNT(DISTINCT loan_id)
 - "# applications" / "application count" / "number of applications" / "how many applications"
     → COUNT(DISTINCT application_id)
+- "# customers" / "customer count" / "number of customers" / "how many customers" / "customers we service" / "customers serviced" / "total customers" / "unique customers" / "customers do we service"
+    → COUNT unique borrowers across all funded product tables.
+    Use UNION DISTINCT on customer_id (cc_origination uses account_id — exclude or treat separately).
+    → SELECT COUNT(*) AS total_unique_customers FROM (
+        SELECT customer_id FROM `ai-risk-workflow.credit_risk.personal_loans_funded`
+        UNION DISTINCT
+        SELECT customer_id FROM `ai-risk-workflow.credit_risk.mortgages_funded`
+      )
+    Always label the result column 'total_unique_customers' and report the numeric count.
+- "# accounts by product type" / "number of accounts by product type" / "accounts by product type" / "active accounts by product type" / "number of active accounts" / "account count by product type" / "accounts per product type" / "accounts breakdown by product"
+    → use number_of_active_accounts and product_type from `ai-risk-workflow.credit_risk.org_balance_sheet`
+    CRITICAL: period_end_date is INT64 nanoseconds — NEVER compare directly to a DATE.
+    For most-recent snapshot grouped by product type (point-in-time):
+    → WITH latest AS (
+        SELECT MAX(period_end_date) AS max_period
+        FROM `ai-risk-workflow.credit_risk.org_balance_sheet`
+      )
+      SELECT obs.product_type,
+             SUM(obs.number_of_active_accounts) AS total_active_accounts
+      FROM `ai-risk-workflow.credit_risk.org_balance_sheet` obs
+      JOIN latest ON obs.period_end_date = latest.max_period
+      GROUP BY obs.product_type
+      ORDER BY total_active_accounts DESC
+    For trend over time by product type (timeseries):
+    → SELECT
+        CAST(TIMESTAMP_MICROS(CAST(period_end_date / 1000 AS INT64)) AS DATE) AS report_date,
+        product_type,
+        number_of_active_accounts
+      FROM `ai-risk-workflow.credit_risk.org_balance_sheet`
+      ORDER BY period_end_date, product_type
+    Response must mention 'accounts' and 'product'.
 - "delinquency rate" / "delinquency" / "DPD rate" / "30+ DPD rate" / "30 DPD" (overall portfolio, no state filter)
     → use `30dpd_rate`, `60dpd_rate`, `90dpd_rate`, `delinquency_rate` from
       `ai-risk-workflow.credit_risk.org_balance_sheet`
@@ -1040,6 +1086,29 @@ Informal table/column aliases:
     → `ai-risk-workflow.credit_risk.mortgage_applications` / `ai-risk-workflow.credit_risk.mortgages_funded`
 - "decline rate" / "rejection rate"
     → COUNTIF(decision_outcome = 'DECLINE') / COUNT(*) from `ai-risk-workflow.credit_risk.decision_registry` or application tables
+- "Freddie Mac" / "SFLLD" / "GSE loans" / "single-family loan level data" / "Freddie originations" / "Freddie Mac count" / "how many Freddie Mac loans" / "Freddie Mac delinquency"
+    For origination counts / loan counts:
+    → SELECT COUNT(*) AS freddie_loan_count
+      FROM `ai-risk-workflow.freddie_mac_sflld.freddie_origination`
+    For delinquency / performance:
+    → SELECT fp.current_delinquency_status,
+             COUNT(*) AS loan_count
+      FROM `ai-risk-workflow.freddie_mac_sflld.freddie_performance` fp
+      GROUP BY fp.current_delinquency_status
+      ORDER BY loan_count DESC
+    For time-series delinquency trend (monthly_reporting_period is INT64 nanoseconds):
+    → SELECT
+        DATE_TRUNC(TIMESTAMP_MICROS(CAST(monthly_reporting_period / 1000 AS INT64)), MONTH) AS period,
+        COUNTIF(CAST(current_delinquency_status AS INT64) > 0) AS delinquent_count,
+        COUNT(*) AS total_count,
+        ROUND(SAFE_DIVIDE(
+          COUNTIF(CAST(current_delinquency_status AS INT64) > 0),
+          COUNT(*)
+        ) * 100, 2) AS delinquency_rate_pct
+      FROM `ai-risk-workflow.freddie_mac_sflld.freddie_performance`
+      GROUP BY period
+      ORDER BY period
+    ALWAYS use dataset `freddie_mac_sflld` for Freddie Mac queries — NEVER credit_risk.
 
 CRITICAL table naming rule: ALWAYS use the full 3-part name `ai-risk-workflow.<dataset>.<table>`.
 Never omit the dataset. Never use 2-part names like `ai-risk-workflow.<table>`.
@@ -1138,6 +1207,7 @@ def _build_product_type_suppress_pattern() -> re.Pattern:
         r"|\bcc\b|freddie|sflld|\bpl\b|pers(?:onal)?"
         r"|all\s+(?:products?|types?|combined|loans?)|entire\s+portfolio"
         r"|portfolio(?:\s*wide)?|across\s+(?:all\s+)?products?"
+        r"|by\s+product"  # 'by product type' = GROUP BY intent — no clarification needed
         r"|total\s+(?:loans?|applications?|portfolio|balance|outstanding)"
         r"|seasoning|exclude\s+accounts|excluding\s+accounts|\d+\s+months?\s+old"
         r"|months?\s+old|origination\s+date|originated\s+(?:less|more|before|after)"
@@ -1280,12 +1350,31 @@ _QUERY_NORMALIZATIONS: List[tuple] = [
     (re.compile(r"\bfor\s+the\s+(?:full|whole)\s+(?:time\s+)?period\b", re.IGNORECASE), "over all available history"),
 ]
 
+# Freddie Mac routing injection: when the question mentions Freddie Mac / SFLLD keywords,
+# append an explicit table-routing instruction directly in the user message so the LLM
+# cannot default to credit_risk tables regardless of the schema context.
+_FREDDIE_KEYWORDS = re.compile(
+    r"\bfreddie\b|\bsflld\b|\bgse\b|\bsingle[\s\-]family\s+loan\s+level\b",
+    re.IGNORECASE,
+)
+_FREDDIE_ROUTING_HINT = (
+    "\n\n[TABLE ROUTING: This question is about Freddie Mac / SFLLD data. "
+    "You MUST query `ai-risk-workflow.freddie_mac_sflld.freddie_origination` "
+    "for count/origination questions, or "
+    "`ai-risk-workflow.freddie_mac_sflld.freddie_performance` for "
+    "delinquency/performance questions. "
+    "Do NOT use any credit_risk.* table for this question.]"
+)
+
 
 def _normalize_query(question: str) -> str:
     """Apply all normalizations sequentially and return the cleaned question."""
     result = question
     for pattern, replacement in _QUERY_NORMALIZATIONS:
         result = pattern.sub(replacement, result)
+    # Inject Freddie Mac routing hint when SFLLD / Freddie keywords are detected
+    if _FREDDIE_KEYWORDS.search(result):
+        result = result + _FREDDIE_ROUTING_HINT
     return result
 
 
@@ -1484,6 +1573,47 @@ async def s2s_ask(
     """
     if x_service_key != _SERVICE_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing X-Service-Key.")
+
+    # Fast-path: Freddie Mac / SFLLD questions — bypass both semantic agent and LLM.
+    # The LLM + semantic agent consistently route these to credit_risk.personal_loans_funded;
+    # a deterministic template is more reliable for these well-defined Freddie Mac queries.
+    _freddie_q = req.question.lower()
+    if _FREDDIE_KEYWORDS.search(_freddie_q):
+        _is_perf = bool(re.search(
+            r"\bdelinquen|\bdefault\b|\bperformanc|\bdpd\b|\bpast.due",
+            _freddie_q,
+        ))
+        if _is_perf:
+            _freddie_sql = (
+                "SELECT fp.current_delinquency_status,\n"
+                "       COUNT(*) AS loan_count\n"
+                "FROM `ai-risk-workflow.freddie_mac_sflld.freddie_performance` fp\n"
+                "GROUP BY fp.current_delinquency_status\n"
+                "ORDER BY loan_count DESC"
+            )
+        else:
+            _freddie_sql = (
+                "SELECT COUNT(*) AS freddie_loan_count\n"
+                "FROM `ai-risk-workflow.freddie_mac_sflld.freddie_origination`"
+            )
+        logger.info(
+            "s2s/ask Freddie Mac fast-path: routed to %s",
+            "freddie_performance" if _is_perf else "freddie_origination",
+        )
+        try:
+            _freddie_rows = _run_bq_sql(_freddie_sql) if BQ_PROJECT else []
+        except Exception as exc:
+            logger.error("s2s/ask Freddie fast-path BQ error sql=%r err=%s", _freddie_sql, exc)
+            raise HTTPException(status_code=500, detail=f"Query execution failed: {exc}")
+        return S2SAskResponse(
+            question=req.question,
+            needs_clarification=False,
+            generated_sql=_freddie_sql,
+            rows=_freddie_rows[:200],
+            row_count=len(_freddie_rows[:200]),
+            truncated=len(_freddie_rows) > 200,
+            assumed_defaults=[],
+        )
 
     # Feature flag: route through Semantic Intelligence Agent when enabled
     if os.getenv("USE_SEMANTIC_AGENT", "").lower() in ("true", "1", "yes"):
