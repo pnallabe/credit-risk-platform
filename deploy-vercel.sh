@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Credit Risk Platform — Vercel Frontend Deploy Script
+# HelixDecision — Vercel Frontend Deploy Script
 #
 # Deploys both Next.js apps to Vercel:
 #   ui/applicant-portal    → applicant-facing loan portal
@@ -35,7 +35,7 @@ fi
 
 echo ""
 echo "========================================================"
-echo "  Credit Risk Platform — Vercel Deploy (${TARGET})"
+echo "  HelixDecision — Vercel Deploy (${TARGET})"
 echo "========================================================"
 echo ""
 

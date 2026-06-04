@@ -186,6 +186,7 @@ class DataIngestionAgent(BaseAgent):
 
         return ValidatedRecord(
             application_id=record.application_id,
+            tenant_id=self._tenant_id,
             raw_features=record.model_dump(),
             validation_passed=len(errors) == 0,
             validation_errors=errors,
@@ -200,11 +201,13 @@ class DataIngestionAgent(BaseAgent):
     def _run(self, inputs: Dict[str, Any]) -> AgentResult:
         """
         inputs expected keys:
-          "records" : List[dict]   — raw applicant payloads
-          "source"  : str          — optional source tag (default "api")
+          "records"   : List[dict]   — raw applicant payloads
+          "source"    : str          — optional source tag (default "api")
+          "tenant_id" : str          — tenant identifier (default "default")
         """
         raw_records: List[Dict[str, Any]] = inputs.get("records", [])
         source: str = inputs.get("source", "api")
+        self._tenant_id: str = inputs.get("tenant_id", "default")
 
         if not raw_records:
             return AgentResult(

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Credit Risk Platform — GCP Backend Deploy Script
+# HelixDecision — GCP Backend Deploy Script
 #
 # Provisions all GCP infrastructure and deploys backend services:
 #   - Cloud SQL (PostgreSQL 16)
@@ -47,7 +47,7 @@ fi
 
 echo ""
 echo "========================================================"
-echo "  Credit Risk Platform — GCP Deploy"
+echo "  HelixDecision — GCP Deploy"
 echo "  Environment : ${ENVIRONMENT}"
 echo "  Project     : ${PROJECT_ID}"
 echo "  Region      : ${REGION}"
@@ -76,7 +76,7 @@ if ! gcloud artifacts repositories describe "${REPO_NAME}" --location="${REGION}
   gcloud artifacts repositories create "${REPO_NAME}" \
     --repository-format=docker \
     --location="${REGION}" \
-    --description="Credit Risk Platform Docker images"
+    --description="HelixDecision Docker images"
   echo "  ✓ Created ${REPO_NAME}"
 else
   echo "  ✓ Already exists"

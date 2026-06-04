@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "LendSmart Analytics",
-  description: "Role-based analytics and monitoring dashboard for the credit risk platform",
+  title: "HelixDecision Analytics",
+  description: "Role-based analytics and monitoring dashboard for HelixDecision",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

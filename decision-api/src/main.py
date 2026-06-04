@@ -28,6 +28,7 @@ DELETE /v1/webhooks/{id}                  — G16-B: Deactivate a webhook
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 import os
 import sys
@@ -48,6 +49,7 @@ import sys as _sys
 _src_dir = str(Path(__file__).parent)
 if _src_dir not in _sys.path:
     _sys.path.insert(0, _src_dir)
+_project_root = Path(__file__).parents[2]
 
 from middleware.idempotency import IdempotencyMiddleware  # noqa: E402
 from middleware.rate_limit import RateLimitMiddleware  # noqa: E402
@@ -55,6 +57,9 @@ from middleware.rate_limit import RateLimitMiddleware  # noqa: E402
 # Make project root importable
 ROOT = Path(__file__).parents[3]
 sys.path.insert(0, str(ROOT))
+_INGESTION_SRC_DIR = _project_root / "ingestion-api" / "src"
+if _INGESTION_SRC_DIR.exists():
+    sys.path.insert(0, str(_INGESTION_SRC_DIR))
 
 from audit.logger import get_audit_record, log_decision  # noqa: E402
 from config_registry.service import ConfigRegistryService  # noqa: E402  (P2.1)
@@ -3620,6 +3625,13 @@ class PlaidLinkTokenRequest(BaseModel):
     client_name: Optional[str] = None
 
 
+def _load_plaid_connector_module():
+    try:
+        return importlib.import_module("ingestion_api.src.plaid_connector")
+    except ModuleNotFoundError:
+        return importlib.import_module("plaid_connector")
+
+
 @app.post(
     "/v1/plaid/link-token",
     summary="Create a Plaid Link token for open-banking onboarding (Sprint 7-B)",
@@ -3631,7 +3643,8 @@ async def plaid_create_link_token(
     payload: Dict = Depends(verify_bearer),
 ) -> Dict:
     """Create a Plaid Link token for the borrower identified by *user_id*."""
-    from ingestion_api.src.plaid_connector import PlaidConnector  # noqa: PLC0415
+    connector_module = _load_plaid_connector_module()
+    PlaidConnector = getattr(connector_module, "PlaidConnector")
 
     connector = PlaidConnector()
     try:
@@ -3665,7 +3678,9 @@ async def plaid_exchange_token(
     """Exchange a Plaid Link public token for a persistent access token and
     immediately fetch and return the BankDataSummary."""
     import dataclasses as _dc
-    from ingestion_api.src.plaid_connector import PlaidConnector, enrich_with_cash_flow_data  # noqa: PLC0415
+    connector_module = _load_plaid_connector_module()
+    PlaidConnector = getattr(connector_module, "PlaidConnector")
+    enrich_with_cash_flow_data = getattr(connector_module, "enrich_with_cash_flow_data")
 
     connector = PlaidConnector()
     try:
@@ -3686,7 +3701,7 @@ async def plaid_exchange_token(
 
 @app.post(
     "/v1/bank/enrich/{application_id}",
-    summary="Enrich application with cash-flow data from Plaid/Finicity (Sprint 7-B)",
+    summary="Enrich application with cash-flow data from Plaid/Finicity/OBP (Sprint 7-B)",
     tags=["Open Banking"],
 )
 async def enrich_application_with_bank_data(
@@ -3698,14 +3713,39 @@ async def enrich_application_with_bank_data(
     """Fetch bank transactions for *application_id*, analyse cash flow, and return
     a BankDataSummary with derived features ready for the feature pipeline."""
     import dataclasses as _dc
-    from ingestion_api.src.plaid_connector import enrich_with_cash_flow_data  # noqa: PLC0415
+    connector_module = _load_plaid_connector_module()
+    ProviderConfigurationError = getattr(connector_module, "ProviderConfigurationError")
+    ProviderResponseError = getattr(connector_module, "ProviderResponseError")
+    enrich_with_cash_flow_data = getattr(connector_module, "enrich_with_cash_flow_data")
+
+    allowed_providers = {"plaid", "finicity", "openbankproject", "obp", "open_bank_project", "mock"}
+    normalized_provider = (provider or "plaid").strip().lower()
+    if normalized_provider not in allowed_providers:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid provider '{provider}'. Allowed providers: plaid, finicity, openbankproject, mock",
+        )
+
+    canonical_provider = "openbankproject" if normalized_provider in {"obp", "open_bank_project"} else normalized_provider
 
     try:
         summary = await enrich_with_cash_flow_data(
             user_id=application_id,
             access_token=access_token,
-            provider=provider,
+            provider=canonical_provider,
         )
+    except ProviderConfigurationError as exc:
+        if exc.error_category in {"invalid_account_link", "missing_access_token", "configuration"}:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Bank connector error: {exc}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Bank connector error: {exc}")
+    except ProviderResponseError as exc:
+        if exc.error_category in {"timeout", "upstream_timeout"}:
+            raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=f"Bank connector timeout: {exc}")
+        if exc.error_category == "auth_failure":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Bank connector auth failure: {exc}")
+        if exc.error_category == "schema_mismatch":
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Bank connector schema mismatch: {exc}")
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Bank connector upstream error: {exc}")
     except Exception as exc:
         logger.warning("Bank enrichment failed for %s: %s", application_id, exc)
         raise HTTPException(

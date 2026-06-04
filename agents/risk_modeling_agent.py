@@ -400,6 +400,7 @@ class RiskModelingAgent(BaseAgent):
         inputs expected keys:
           "feature_df"       : List[dict]  — feature row dicts
           "use_challenger"   : bool        — override challenger flag (optional)
+          "tenant_id"        : str         — tenant identifier (optional)
         """
         feature_dicts: List[Dict[str, Any]] = inputs.get("feature_df", [])
         if not feature_dicts:
@@ -411,6 +412,7 @@ class RiskModelingAgent(BaseAgent):
 
         df = pd.DataFrame(feature_dicts)
         use_challenger_pd: bool = inputs.get("use_challenger", False)
+        self._tenant_id: str = inputs.get("tenant_id", "default")
 
         # ── PD + Fraud scoring (Sections 1-18) ──────────────────────────
         pd_results = self._score_pd(df, use_challenger=use_challenger_pd)
@@ -461,6 +463,7 @@ class RiskModelingAgent(BaseAgent):
             scores.append(
                 ModelScores(
                     application_id=app_id,
+                    tenant_id=self._tenant_id,
                     pd_score=pd_score,
                     pd_band=self._pd_band(pd_score),
                     fraud_probability=fraud_prob,

@@ -109,8 +109,48 @@ class ApplicantInput(BaseModel):
     utility_payment_months: Optional[int] = Field(None, ge=0, description="Months of on-time utilities")
     mobile_data_score: Optional[float] = Field(None, ge=0, le=1.0, description="Normalised mobile usage signal")
     bank_account_age_months: Optional[int] = Field(None, ge=0)
-    avg_monthly_cash_inflow: Optional[float] = Field(None, ge=0)
-    avg_monthly_cash_outflow: Optional[float] = Field(None, ge=0)
+    avg_monthly_cash_inflow: Optional[float] = Field(None, ge=0, description="Average monthly bank inflow (USD)")
+    avg_monthly_cash_outflow: Optional[float] = Field(None, ge=0, description="Average monthly bank outflow (USD)")
+
+    # --- Enriched cash-flow fields (from open-banking enrichment layer) ---
+    monthly_net_income: Optional[float] = Field(
+        None, ge=0, description="Net monthly income from open-banking enrichment (USD)"
+    )
+    avg_monthly_end_balance: Optional[float] = Field(
+        None, ge=0, description="Average end-of-month balance over lookback window (USD)"
+    )
+    min_balance_90d: Optional[float] = Field(
+        None, description="Minimum balance observed in last 90 days (USD); can be negative (overdraft)"
+    )
+    nsfv_last_90_days: Optional[int] = Field(
+        None, ge=0, description="NSF / insufficient-funds events in last 90 days"
+    )
+    returned_payment_count: Optional[int] = Field(
+        None, ge=0, description="Number of returned payments in lookback window"
+    )
+    gambling_transaction_count: Optional[int] = Field(
+        None, ge=0, description="Number of gambling-category transactions detected"
+    )
+    payday_loan_detected: Optional[bool] = Field(
+        None, description="Whether a payday loan transaction was detected"
+    )
+    large_unusual_deposit_count: Optional[int] = Field(
+        None, ge=0, description="Number of large or unusual deposit events (>3x avg monthly inflow)"
+    )
+    income_confidence: Optional[float] = Field(
+        None, ge=0.0, le=1.0, description="Confidence score for income estimation (0–1)"
+    )
+    bank_enrichment_provider: Optional[str] = Field(
+        None, max_length=64, description="Provider used for bank enrichment (plaid, obp, mock, etc.)"
+    )
+
+    @field_validator("nsfv_last_90_days", "returned_payment_count",
+                     "gambling_transaction_count", "large_unusual_deposit_count")
+    @classmethod
+    def non_negative_int(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and v < 0:
+            raise ValueError("Field must be >= 0")
+        return v
 
     @field_validator("borrower_state")
     @classmethod
