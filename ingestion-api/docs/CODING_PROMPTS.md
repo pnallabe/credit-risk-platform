@@ -456,35 +456,79 @@ Write unit tests with a synthetic decisions DataFrame.
 ```
 Build a Streamlit dashboard at `dashboard/app.py`.
 
-Pages (sidebar navigation):
+Objective:
+Deliver an enterprise-ready Streamlit dashboard suitable for executive, risk,
+and compliance consumption. The UI must feel polished, consistent, and
+presentation-quality (not a prototype).
+
+Enterprise UX and design requirements:
+- Use a professional visual system in `.streamlit/config.toml`:
+  typography hierarchy, consistent spacing scale, neutral enterprise palette,
+  status colors (success/warn/error), and compact KPI card styling.
+- Add global filter controls in the sidebar: date range, product type,
+  region/state, and decision status.
+- Ensure responsive layouts for large laptop and standard monitor views.
+- Add loading, empty-state, and error-state UI for every page.
+- Use clear metric definitions and tooltips for non-obvious fields.
+
+Required pages (sidebar navigation):
 
 1. Portfolio Overview
-   - Cards: total applications, approval rate, avg risk score, fraud rate
-   - Time-series chart: daily approval rate (last 30 days)
-   - Bar chart: decisions by loan purpose
+  - KPI cards: total applications, approval rate, avg risk score, fraud rate
+  - Time-series: daily approval rate (last 30 days)
+  - Decision mix by product and by loan purpose
+  - Source panel showing where each metric came from
 
 2. Model Performance
-   - AUC and KS metric cards (loaded from MLflow or a JSON file)
-   - ROC curve plot
-   - Feature importance bar chart (top 10 SHAP values)
+  - AUC and KS KPI cards (from MLflow or governed metrics artifact)
+  - ROC curve plot
+  - Feature importance bar chart (top 10 SHAP values)
+  - Model version + training window + metrics timestamp
 
 3. Drift Monitor
-   - Load drift reports from monitoring/reports/
-   - Traffic-light table: green/yellow/red per feature
-   - PSI trend line chart
+  - Load drift reports from monitoring/reports/
+  - Traffic-light table: green/yellow/red per feature
+  - PSI trend line chart
+  - Drill-through list of accounts/applications driving highest drift features
 
 4. Fair Lending
-   - DIR score gauge chart
-   - Approval rate by state choropleth (plotly)
-   - Approval parity p-value with PASS/FAIL badge
+  - DIR score gauge chart
+  - Approval rate by state choropleth (plotly)
+  - Approval parity p-value with PASS/FAIL badge
+  - Segment table with product-level disparity breakdown
 
 5. Audit Lookup
-   - Text input for application_id
-   - Calls GET /v1/decisions/{id}/audit and displays full audit record
-   - Shows SHAP waterfall chart for that decision
+  - Text input for application_id
+  - Calls GET /v1/decisions/{id}/audit and displays full audit record
+  - Shows SHAP waterfall chart for that decision
+  - Linked evidence panel (decision trace id, model version, policy version)
 
-Use plotly for all charts and st.cache_data for all data loads.
-Add a .streamlit/config.toml with theme settings.
+Data source transparency (mandatory):
+- Every page must include a visible "Data Sources" section with:
+  source system, dataset/table/file path, refresh timestamp, and owner.
+- Add per-chart footnotes that map visualization -> query/source artifact.
+- Add a data freshness indicator with warning when stale.
+
+Drill-down requirements (mandatory):
+- Implement hierarchical drill-down flow:
+  portfolio -> product -> account/application.
+- Product drill-down view must show risk, approval, delinquency, and volume
+  trends by product family (e.g., BNPL, Personal Loan, SMB Loan).
+- Account/application drill-down must include timeline, key decision factors,
+  latest model outputs, and direct link to audit payload.
+- Preserve filter context while drilling down and when navigating back.
+
+Implementation constraints:
+- Use plotly for all charts and `st.cache_data` for data-loading functions.
+- Keep data adapters separate from presentation code.
+- Avoid hardcoded/mock values in production paths; clearly label any demo data.
+
+Testing and acceptance:
+- Add tests for page rendering with empty and populated data.
+- Add tests for filter behavior and drill-down state preservation.
+- Add tests validating that data-source metadata is present for each page.
+- Include a short "dashboard readiness" checklist in docs covering
+  accessibility, performance, and source traceability.
 ```
 
 ---

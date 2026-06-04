@@ -19,7 +19,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
 
@@ -47,6 +47,63 @@ def _days_ago(n: int) -> str:
     return (datetime.now(timezone.utc) - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _render_enterprise_shell() -> None:
+    st.markdown(
+        """
+        <style>
+        .main .block-container {
+            padding-top: 1.3rem;
+            padding-bottom: 2rem;
+        }
+        .enterprise-caption {
+            color: #5f6b7a;
+            font-size: 0.86rem;
+        }
+        .source-card {
+            border: 1px solid #d8dee6;
+            border-radius: 10px;
+            padding: 0.75rem 0.9rem;
+            background: #f9fbfd;
+            margin-bottom: 0.5rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_data_sources(sources: List[Dict[str, str]]) -> None:
+    st.markdown("#### Data Sources")
+    for src in sources:
+        st.markdown(
+            (
+                '<div class="source-card">'
+                f"<strong>{src.get('label', 'Unknown Source')}</strong><br/>"
+                f"System: {src.get('system', 'N/A')}<br/>"
+                f"Path: {src.get('path', 'N/A')}<br/>"
+                f"Owner: {src.get('owner', 'N/A')}<br/>"
+                f"Refresh: {src.get('refresh', 'N/A')}"
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
+
+
+def _render_freshness_indicator(last_refresh: Optional[datetime], ttl_minutes: int = 15) -> None:
+    if last_refresh is None:
+        st.warning("Data freshness unknown")
+        return
+    age_minutes = (_now_utc() - last_refresh).total_seconds() / 60
+    if age_minutes > ttl_minutes:
+        st.warning(f"Data stale: {int(age_minutes)} minutes old")
+    else:
+        st.success(f"Data fresh: {int(age_minutes)} minutes old")
+
+
 @st.cache_data(ttl=300)
 def load_portfolio_data() -> pd.DataFrame:
     """Return mock portfolio decisions for the last 30 days."""
@@ -59,17 +116,64 @@ def load_portfolio_data() -> pd.DataFrame:
         ["personal", "auto", "home_improvement", "medical", "education", "debt_consolidation"],
         size=n,
     )
+    products = rng.choice(["BNPL", "PERSONAL_LOAN", "SMB_LOAN"], size=n, p=[0.44, 0.38, 0.18])
+    protected_groups = rng.choice(["group_A", "group_B"], size=n, p=[0.45, 0.55])
     df = pd.DataFrame({
+        "application_id": [f"app-{i:06d}" for i in range(n)],
+        "account_id": [f"acct-{rng.randint(100000, 999999)}" for _ in range(n)],
         "date": rng.choice(dates, size=n),
         "decision": decisions,
         "pd_score": rng.beta(2, 18, size=n),
         "fraud_probability": rng.beta(1, 20, size=n),
+        "product_type": products,
+        "protected_group": protected_groups,
         "loan_purpose": purposes,
         "loan_amount": rng.uniform(1000, 100000, size=n),
+        "delinquent_30p": rng.choice([0, 1], size=n, p=[0.92, 0.08]),
         "state": rng.choice(["CA", "TX", "NY", "FL", "WA", "IL", "PA", "OH"], size=n),
     })
     df["date"] = pd.to_datetime(df["date"])
     return df
+
+
+def _build_global_filters() -> Dict[str, Any]:
+    df = load_portfolio_data()
+    min_date = df["date"].min().date()
+    max_date = df["date"].max().date()
+
+    st.sidebar.subheader("Global Filters")
+    date_range = st.sidebar.date_input("Date Range", (min_date, max_date), min_value=min_date, max_value=max_date)
+    products = sorted(df["product_type"].unique().tolist())
+    states = sorted(df["state"].unique().tolist())
+    decisions = sorted(df["decision"].unique().tolist())
+    selected_products = st.sidebar.multiselect("Product", products, default=products)
+    selected_states = st.sidebar.multiselect("Region / State", states, default=states)
+    selected_decisions = st.sidebar.multiselect("Decision Status", decisions, default=decisions)
+
+    start_date, end_date = min_date, max_date
+    if isinstance(date_range, tuple) and len(date_range) == 2:
+        start_date, end_date = date_range
+    elif hasattr(date_range, "__iter__"):
+        as_list = list(date_range)
+        if len(as_list) == 2:
+            start_date, end_date = as_list[0], as_list[1]
+
+    return {
+        "start_date": pd.to_datetime(start_date),
+        "end_date": pd.to_datetime(end_date),
+        "products": selected_products,
+        "states": selected_states,
+        "decisions": selected_decisions,
+    }
+
+
+def _apply_global_filters(df: pd.DataFrame, filters: Dict[str, Any]) -> pd.DataFrame:
+    filtered = df.copy()
+    filtered = filtered[(filtered["date"] >= filters["start_date"]) & (filtered["date"] <= filters["end_date"])]
+    filtered = filtered[filtered["product_type"].isin(filters["products"])]
+    filtered = filtered[filtered["state"].isin(filters["states"])]
+    filtered = filtered[filtered["decision"].isin(filters["decisions"])]
+    return filtered
 
 
 @st.cache_data(ttl=300)
@@ -141,7 +245,10 @@ st.sidebar.title("Credit Risk Platform")
 st.sidebar.markdown("---")
 page = st.sidebar.radio("Navigation", PAGES)
 st.sidebar.markdown("---")
+GLOBAL_FILTERS = _build_global_filters()
+st.sidebar.markdown("---")
 st.sidebar.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
+_render_enterprise_shell()
 
 
 # ---------------------------------------------------------------------------
@@ -149,9 +256,14 @@ st.sidebar.caption(f"Last refresh: {datetime.now().strftime('%H:%M:%S')}")
 # ---------------------------------------------------------------------------
 
 
-def page_portfolio_overview() -> None:
+def page_portfolio_overview(filters: Dict[str, Any]) -> None:
     st.title("📈 Portfolio Overview")
-    df = load_portfolio_data()
+    with st.spinner("Loading portfolio analytics..."):
+        df = _apply_global_filters(load_portfolio_data(), filters)
+
+    if df.empty:
+        st.warning("No portfolio records found for selected filters.")
+        return
 
     total = len(df)
     approved = (df["decision"] == "APPROVE").sum()
@@ -165,11 +277,12 @@ def page_portfolio_overview() -> None:
     c3.metric("Avg Risk Score", f"{avg_risk:.4f}")
     c4.metric("Fraud Flag Rate", f"{fraud_rate:.1%}")
 
+    _render_freshness_indicator(df["date"].max().to_pydatetime().replace(tzinfo=timezone.utc), ttl_minutes=24 * 60)
+
     st.markdown("---")
 
     try:
         import plotly.express as px
-        import plotly.graph_objects as go
 
         # Daily approval rate
         daily = (
@@ -205,9 +318,85 @@ def page_portfolio_overview() -> None:
                                               "MANUAL_REVIEW": "#ffc107"})
             st.plotly_chart(fig3, use_container_width=True)
 
+        st.markdown("---")
+        st.subheader("Drill-Down: Portfolio → Product → Application")
+
+        product_summary = (
+            df.groupby("product_type")
+            .agg(
+                applications=("application_id", "count"),
+                approval_rate=("decision", lambda x: (x == "APPROVE").mean()),
+                avg_pd=("pd_score", "mean"),
+                delinquency_rate=("delinquent_30p", "mean"),
+                volume=("loan_amount", "sum"),
+            )
+            .reset_index()
+            .sort_values("applications", ascending=False)
+        )
+        st.dataframe(product_summary, use_container_width=True, hide_index=True)
+
+        product_options = product_summary["product_type"].tolist()
+        selected_product = st.selectbox(
+            "Select Product",
+            options=product_options,
+            key="portfolio_selected_product",
+            help="Filter down to a specific product family while preserving global filters.",
+        )
+        product_df = df[df["product_type"] == selected_product].sort_values("date", ascending=False)
+
+        account_cols = [
+            "application_id",
+            "account_id",
+            "date",
+            "decision",
+            "pd_score",
+            "loan_amount",
+            "state",
+            "fraud_probability",
+        ]
+        st.dataframe(product_df[account_cols].head(30), use_container_width=True, hide_index=True)
+
+        selected_app = st.selectbox(
+            "Select Application for Account Drill-Down",
+            options=product_df["application_id"].tolist(),
+            key="portfolio_selected_application",
+        )
+        selected_row = product_df[product_df["application_id"] == selected_app].iloc[0]
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Application", selected_row["application_id"])
+        c2.metric("Account", selected_row["account_id"])
+        c3.metric("Decision", selected_row["decision"])
+        c4.metric("PD Score", f"{selected_row['pd_score']:.4f}")
+
+        timeline = pd.DataFrame(
+            [
+                {"event_time": selected_row["date"], "event": "Application Submitted"},
+                {"event_time": selected_row["date"] + pd.Timedelta(minutes=2), "event": "Features Engineered"},
+                {"event_time": selected_row["date"] + pd.Timedelta(minutes=4), "event": "Policy Decision Completed"},
+            ]
+        )
+        st.dataframe(timeline, use_container_width=True, hide_index=True)
+        st.markdown(
+            f"Audit endpoint: `{os.getenv('DECISION_API_URL', 'http://localhost:8081').rstrip('/')}/v1/decisions/{selected_app}/audit`"
+        )
+
+        _render_data_sources(
+            [
+                {
+                    "label": "Portfolio Aggregates",
+                    "system": "Streamlit data adapter",
+                    "path": "dashboard/app.py::load_portfolio_data",
+                    "owner": "Risk Analytics",
+                    "refresh": _now_utc().strftime("%Y-%m-%d %H:%M:%S UTC"),
+                }
+            ]
+        )
+
     except ImportError:
         st.warning("Install plotly for interactive charts: pip install plotly")
         st.bar_chart(df["decision"].value_counts())
+    except Exception as exc:
+        st.error(f"Portfolio page failed to render: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +404,10 @@ def page_portfolio_overview() -> None:
 # ---------------------------------------------------------------------------
 
 
-def page_model_performance() -> None:
+def page_model_performance(filters: Dict[str, Any]) -> None:
     st.title("🤖 Model Performance")
     metrics = load_model_metrics()
+    context_df = _apply_global_filters(load_portfolio_data(), filters)
 
     c1, c2, c3, c4 = st.columns(4)
     auc_ok = metrics["auc"] >= 0.75
@@ -226,6 +416,11 @@ def page_model_performance() -> None:
     c2.metric("KS Statistic", f"{metrics['ks']:.4f}", delta="✓ PASS" if ks_ok else "✗ FAIL")
     c3.metric("Precision", f"{metrics['precision']:.4f}")
     c4.metric("F1 Score", f"{metrics['f1']:.4f}")
+    if not context_df.empty:
+        st.caption(
+            f"Context window: {len(context_df):,} apps | "
+            f"{context_df['date'].min().date()} to {context_df['date'].max().date()}"
+        )
 
     st.markdown("---")
 
@@ -271,6 +466,20 @@ def page_model_performance() -> None:
 
     except ImportError:
         st.info("Install plotly and scikit-learn for charts.")
+    except Exception as exc:
+        st.error(f"Model performance page failed to render: {exc}")
+
+    _render_data_sources(
+        [
+            {
+                "label": "Model Metrics",
+                "system": "MLflow / metrics artifact",
+                "path": "mlflow tracking store or local JSON",
+                "owner": "Model Risk",
+                "refresh": _now_utc().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            }
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -278,9 +487,10 @@ def page_model_performance() -> None:
 # ---------------------------------------------------------------------------
 
 
-def page_drift_monitor() -> None:
+def page_drift_monitor(filters: Dict[str, Any]) -> None:
     st.title("🔍 Drift Monitor")
     reports = load_drift_reports()
+    df = _apply_global_filters(load_portfolio_data(), filters)
 
     if not reports:
         st.warning("No drift reports found in monitoring/reports/")
@@ -326,8 +536,34 @@ def page_drift_monitor() -> None:
         fig.add_hline(y=0.25, line_dash="dot", line_color="red",
                       annotation_text="Major threshold (0.25)")
         st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Drift Drill-Through: Impacted Applications")
+        if df.empty:
+            st.info("No applications available for drift drill-through with current filters.")
+        else:
+            impacted = (
+                df.assign(risk_rank=df["pd_score"] + df["fraud_probability"])
+                .sort_values("risk_rank", ascending=False)
+                [["application_id", "account_id", "product_type", "pd_score", "fraud_probability", "state"]]
+                .head(20)
+            )
+            st.dataframe(impacted, use_container_width=True, hide_index=True)
     except ImportError:
         pass
+    except Exception as exc:
+        st.error(f"Drift monitor failed to render: {exc}")
+
+    _render_data_sources(
+        [
+            {
+                "label": "Drift Monitoring Report",
+                "system": "Monitoring artifacts",
+                "path": "monitoring/reports/drift_report_*.json",
+                "owner": "Model Monitoring",
+                "refresh": ts[:19] if ts else "Unknown",
+            }
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -335,8 +571,9 @@ def page_drift_monitor() -> None:
 # ---------------------------------------------------------------------------
 
 
-def page_fair_lending() -> None:
+def page_fair_lending(filters: Dict[str, Any]) -> None:
     st.title("⚖️ Fair Lending")
+    df = _apply_global_filters(load_portfolio_data(), filters)
 
     # Try loading from file, otherwise use mock data
     reports_dir = Path(__file__).parents[1] / "monitoring" / "reports"
@@ -441,19 +678,64 @@ def page_fair_lending() -> None:
     else:
         st.success("✓ No geographic bias detected")
 
+    st.subheader("Product-Level Disparity Breakdown")
+    if df.empty:
+        st.info("No records available for disparity breakdown under current filters.")
+    else:
+        parity_rows: List[Dict[str, Any]] = []
+        grouped = df.groupby(["product_type", "protected_group"])["decision"].apply(lambda x: (x == "APPROVE").mean())
+        for product in sorted(df["product_type"].unique()):
+            a = grouped.get((product, "group_A"), np.nan)
+            b = grouped.get((product, "group_B"), np.nan)
+            ratio = a / b if pd.notna(a) and pd.notna(b) and b > 0 else np.nan
+            parity_rows.append(
+                {
+                    "product_type": product,
+                    "approval_rate_group_A": a,
+                    "approval_rate_group_B": b,
+                    "dir_ratio_A_to_B": ratio,
+                }
+            )
+        st.dataframe(pd.DataFrame(parity_rows), use_container_width=True, hide_index=True)
+
+    _render_data_sources(
+        [
+            {
+                "label": "Fair Lending Report",
+                "system": "Monitoring artifacts",
+                "path": "monitoring/reports/fair_lending_*.json",
+                "owner": "Compliance",
+                "refresh": _now_utc().strftime("%Y-%m-%d %H:%M:%S UTC"),
+            }
+        ]
+    )
+
 
 # ---------------------------------------------------------------------------
 # Page 5: Audit Lookup
 # ---------------------------------------------------------------------------
 
 
-def page_audit_lookup() -> None:
+def page_audit_lookup(filters: Dict[str, Any]) -> None:
     st.title("🔎 Audit Lookup")
     st.markdown("Query the audit log by application ID to review full decision records.")
+    filtered_df = _apply_global_filters(load_portfolio_data(), filters)
+    with st.expander("Quick Select from Current Filter Context", expanded=False):
+        if filtered_df.empty:
+            st.caption("No applications available under current global filters.")
+        else:
+            app_choice = st.selectbox(
+                "Application ID",
+                options=filtered_df.sort_values("date", ascending=False)["application_id"].head(100).tolist(),
+                key="audit_quick_select",
+            )
+            if st.button("Use Selected Application"):
+                st.session_state["audit_selected_app"] = app_choice
 
     application_id = st.text_input(
         "Application ID",
-        placeholder="e.g. app-lr-001",
+        value=st.session_state.get("audit_selected_app", ""),
+        placeholder="e.g. app-000123",
         help="Enter the UUID of the loan application",
     )
 
@@ -478,6 +760,13 @@ def page_audit_lookup() -> None:
                 record = resp.json()
                 st.success(f"✓ Audit record found for `{application_id}`")
                 st.json(record)
+                evidence = {
+                    "decision_trace_id": record.get("decision_trace_id", "N/A"),
+                    "model_version": record.get("model_version", "N/A"),
+                    "policy_version": record.get("policy_version", "N/A"),
+                }
+                st.subheader("Linked Evidence")
+                st.json(evidence)
             elif resp.status_code == 404:
                 st.warning(f"No audit record found for application_id: `{application_id}`")
             else:
@@ -485,6 +774,18 @@ def page_audit_lookup() -> None:
         except Exception as exc:
             st.error(f"Could not reach API at {api_url}: {exc}")
             st.info("Hint: Start the decision API with `uvicorn decision-api.src.main:app --port 8081`")
+
+    _render_data_sources(
+        [
+            {
+                "label": "Decision Audit API",
+                "system": "decision-api",
+                "path": "/v1/decisions/{application_id}/audit",
+                "owner": "Platform Engineering",
+                "refresh": "On demand",
+            }
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -769,15 +1070,15 @@ Applicant → Plaid Link (OAuth) → ingestion-api/plaid_connector.py
 # ---------------------------------------------------------------------------
 
 if page == PAGES[0]:
-    page_portfolio_overview()
+    page_portfolio_overview(GLOBAL_FILTERS)
 elif page == PAGES[1]:
-    page_model_performance()
+    page_model_performance(GLOBAL_FILTERS)
 elif page == PAGES[2]:
-    page_drift_monitor()
+    page_drift_monitor(GLOBAL_FILTERS)
 elif page == PAGES[3]:
-    page_fair_lending()
+    page_fair_lending(GLOBAL_FILTERS)
 elif page == PAGES[4]:
-    page_audit_lookup()
+    page_audit_lookup(GLOBAL_FILTERS)
 elif page == PAGES[5]:
     page_credit_policy_docs()
 elif page == PAGES[6]:
