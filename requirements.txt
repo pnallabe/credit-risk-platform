@@ -30,6 +30,7 @@ lightgbm
 optuna
 scipy
 matplotlib
+plotly
 
 # GCP — data pipeline
 google-cloud-storage>=2.16
