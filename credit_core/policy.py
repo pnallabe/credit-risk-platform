@@ -138,7 +138,7 @@ def evaluate_policy(
             loan_amount = float(row.get("loan_amount", 0.0))
             loan_term_months = int(row.get("loan_term_months", 36))
             dti = float(row.get("debt_to_income_ratio", 0.0))
-            num_open = int(row.get("num_open_accounts", 0))
+            num_open = int(row.get("num_open_accounts") or 0)
             annual_income = float(row.get("annual_income", 0.0))
             borrower_state = row.get("borrower_state", None)
             if pd.isna(borrower_state):

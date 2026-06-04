@@ -1,0 +1,106 @@
+{
+  "tenant_id": "plaid_data",
+  "product_type": "MORTGAGE",
+  "generated_at": "2026-06-04T19:55:53.998400+00:00",
+  "policy_version": "v1",
+  "policy_parameters": {
+    "product_type": "MORTGAGE",
+    "pd_threshold_approve": 0.04,
+    "pd_threshold_refer": 0.08,
+    "fraud_reject_threshold": 0.5,
+    "fraud_review_threshold": 0.25,
+    "max_dti": 0.43,
+    "min_open_accounts": 2,
+    "min_loan_amount_usd": 50000.0,
+    "max_loan_amount_usd": 3500000.0,
+    "base_apr": 6.5,
+    "max_apr": 14.99,
+    "required_features": [
+      "credit_score",
+      "debt_to_income",
+      "ltv",
+      "annual_income",
+      "property_type",
+      "occupancy_type",
+      "appraisal_value"
+    ],
+    "extra_rules": [
+      "qm_ability_to_repay_check",
+      "ltv_max_97pct_conforming",
+      "ltv_max_80pct_no_pmi",
+      "hmda_reporting_required",
+      "cra_activity_tracking",
+      "min_credit_score_620"
+    ],
+    "description": "1-4 family residential mortgage \u2014 conforming and jumbo",
+    "regulatory_notes": "RESPA, TILA-RESPA Integrated Disclosure (TRID), HMDA, QM / Ability-to-Repay rule (12 CFR 1026.43), CRA community reinvestment tracking required. HOEPA triggers apply at APR + 1.5pp over APOR for first liens."
+  },
+  "regulatory_compliance_checklist": [
+    {
+      "regulation": "TRID",
+      "requirement": "Loan Estimate within 3 business days of application",
+      "status": "required"
+    },
+    {
+      "regulation": "TRID",
+      "requirement": "Closing Disclosure \u2265 3 business days before closing",
+      "status": "required"
+    },
+    {
+      "regulation": "QM / ATR",
+      "requirement": "Ability-to-Repay documentation; QM safe harbor if qualifying",
+      "status": "required"
+    },
+    {
+      "regulation": "HMDA",
+      "requirement": "HMDA LAR filing for covered institutions",
+      "status": "conditional"
+    },
+    {
+      "regulation": "RESPA",
+      "requirement": "GFE / CFPB TRID replaces legacy GFE",
+      "status": "required"
+    },
+    {
+      "regulation": "HOEPA",
+      "requirement": "High-cost mortgage triggers at APR + 1.5pp over APOR (1st lien)",
+      "status": "required"
+    },
+    {
+      "regulation": "CRA",
+      "requirement": "Mortgage origination tracked for CRA assessment area",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7604",
+      "requirement": "Permissible purpose (underwriting) documented per transaction",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7615",
+      "requirement": "Adverse action notice identifies Plaid as data source and provides contact details",
+      "status": "required"
+    },
+    {
+      "regulation": "Plaid ToS",
+      "requirement": "End-user OAuth consent captured via Plaid Link; consent record retained 7 years",
+      "status": "required"
+    },
+    {
+      "regulation": "CCPA / CPRA",
+      "requirement": "Plaid bank data included in data-subject access and erasure workflows",
+      "status": "required"
+    },
+    {
+      "regulation": "SOC 2 Type II",
+      "requirement": "Plaid API credentials stored in secrets manager; not in code or config files",
+      "status": "required"
+    }
+  ],
+  "underwriting_data_sources": {
+    "primary": "Plaid (bank account cash-flow)",
+    "secondary": "Credit bureau (Experian / Equifax / TransUnion)",
+    "tertiary": "Alt-data (rent, utilities, mobile via ingestion-api)"
+  },
+  "plaid_features_used": []
+}

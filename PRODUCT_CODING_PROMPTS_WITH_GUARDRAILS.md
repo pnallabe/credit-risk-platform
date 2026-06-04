@@ -2,6 +2,13 @@
 
 This file contains detailed prompts you can run sequentially with a coding agent to deliver the product roadmap.
 
+Priority focus for this prompt pack:
+- BNPL
+- Personal Loan
+- SMB Loan (Secured)
+
+Secondary products are intentionally moved to the end.
+
 Usage guidance:
 - Execute prompts in order.
 - Do not skip guard-rail prompts.
@@ -231,7 +238,122 @@ Deliverables:
 - Rule coverage summary
 ```
 
-## Prompt 9: Credit Builder / Secured Card Profile
+## Prompt 9: SMB Secured Loan Profile Hardening
+
+```text
+Task:
+Implement and harden SMB Secured Loan profile using business cash-flow and collateral controls.
+
+Requirements:
+- Add secured-SMB underwriting fields and policy checks.
+- Validate DSCR and collateral protection gates with deterministic outcomes.
+- Maintain compatibility with existing product evaluator patterns.
+
+Implementation details:
+- Add required-field validation for:
+	annual_revenue, years_in_business, debt_service_coverage_ratio,
+	collateral_type, collateral_value, collateral_ltv.
+- Add secured-loan rules for collateral adequacy and LTV bounds.
+- Add seasonal revenue sensitivity tests and collateral stress cases.
+
+Testing:
+- Product tests for low-DSCR, insufficient collateral, and high-LTV scenarios.
+- Regression tests across Personal Loan and BNPL profiles.
+
+Deliverables:
+- SMB secured profile logic and tests
+- Product-level secured lending risk summary
+```
+
+## Prompt 10: Cross-Product Simulation Harness (Primary Products)
+
+```text
+Task:
+Build a cross-product simulation harness for BNPL, Personal Loan, and SMB Secured policy evaluation.
+
+Requirements:
+- Run all primary product policies on shared fixture sets.
+- Report approval/review/decline distributions and expected-loss proxies.
+
+Implementation details:
+- Add script under scripts/ or tests/helpers to run scenario batches.
+- Persist summary artifacts for review.
+
+Testing:
+- Deterministic output tests for fixed input fixtures.
+
+Deliverables:
+- Simulation harness
+- Baseline output report for primary products
+```
+
+## Prompt 11: Explainability and Reason-Code Regression Suite (Primary Products)
+
+```text
+Task:
+Create a regression suite that validates reason-code and explanation consistency for BNPL, Personal Loan, and SMB Secured.
+
+Requirements:
+- Every major decline route has predictable reason outputs.
+- Product-specific rules map to expected explanation fields.
+
+Implementation details:
+- Add snapshot tests for explanation payloads.
+- Add mapping tests for reason-code completeness.
+
+Testing:
+- Cross-product explanation regression tests for primary products.
+
+Deliverables:
+- Explanation test suite
+- Snapshot update policy note
+```
+
+## Prompt 12: Release Gates and Canary Automation (Primary Launch)
+
+```text
+Task:
+Add release-gate checks and canary automation for primary product rollout safety.
+
+Requirements:
+- Gate merges on policy regression, parity checks, and API health thresholds.
+- Define canary rollback triggers and validation steps.
+
+Implementation details:
+- Add CI checks for key suites.
+- Add deployment checklist and rollback command references.
+
+Testing:
+- Validate gates fail on simulated regressions.
+
+Deliverables:
+- CI/release gate config
+- Rollout and rollback runbook
+```
+
+## Prompt 13: End-to-End Production Readiness Suite (Primary Launch)
+
+```text
+Task:
+Build full end-to-end tests from enrichment to final decision for BNPL, Personal Loan, and SMB Secured.
+
+Requirements:
+- Validate deterministic outputs on fixed fixtures.
+- Cover success, degraded provider, and invalid-input paths.
+
+Implementation details:
+- Add product fixture packs and test orchestration.
+- Ensure tests run in CI with clear failure diagnostics.
+
+Testing:
+- Full E2E tests for primary products.
+
+Deliverables:
+- E2E suite
+- Final readiness summary
+```
+
+## Prompt 14: Credit Builder / Secured Card Profile (Secondary)
 
 ```text
 Task:
@@ -254,7 +376,7 @@ Deliverables:
 - Profile test suite
 ```
 
-## Prompt 10: Overdraft / Cash Advance Profile
+## Prompt 15: Overdraft / Cash Advance Profile (Secondary)
 
 ```text
 Task:
@@ -275,117 +397,6 @@ Testing:
 Deliverables:
 - New profile implementation
 - Affordability-focused tests
-```
-
-## Prompt 11: SMB Working Capital Profile
-
-```text
-Task:
-Implement SMB Working Capital profile with business cash-flow and DSCR-like checks.
-
-Requirements:
-- Add business underwriting fields and policy checks.
-- Maintain compatibility with existing product evaluator patterns.
-
-Implementation details:
-- Add required fields validation for annual_revenue, years_in_business, debt_service_coverage_ratio.
-- Add seasonal revenue sensitivity tests.
-
-Testing:
-- Product tests for low-DSCR and insufficient-history scenarios.
-- Regression tests across all existing products.
-
-Deliverables:
-- SMB profile logic and tests
-- Product-level risk summary
-```
-
-## Prompt 12: Cross-Product Simulation Harness
-
-```text
-Task:
-Build a cross-product simulation harness for policy evaluation and decision quality comparisons.
-
-Requirements:
-- Run all product policies on shared fixture sets.
-- Report approval/review/decline distributions and expected-loss proxies.
-
-Implementation details:
-- Add script under scripts/ or tests/helpers to run scenario batches.
-- Persist summary artifacts for review.
-
-Testing:
-- Deterministic output tests for fixed input fixtures.
-
-Deliverables:
-- Simulation harness
-- Baseline output report
-```
-
-## Prompt 13: Explainability and Reason-Code Regression Suite
-
-```text
-Task:
-Create a regression suite that validates reason-code and explanation consistency per product.
-
-Requirements:
-- Every major decline route has predictable reason outputs.
-- Product-specific rules map to expected explanation fields.
-
-Implementation details:
-- Add snapshot tests for explanation payloads.
-- Add mapping tests for reason-code completeness.
-
-Testing:
-- Cross-product explanation regression tests.
-
-Deliverables:
-- Explanation test suite
-- Snapshot update policy note
-```
-
-## Prompt 14: Release Gates and Canary Automation
-
-```text
-Task:
-Add release-gate checks and canary automation for product rollout safety.
-
-Requirements:
-- Gate merges on policy regression, parity checks, and API health thresholds.
-- Define canary rollback triggers and validation steps.
-
-Implementation details:
-- Add CI checks for key suites.
-- Add deployment checklist and rollback command references.
-
-Testing:
-- Validate gates fail on simulated regressions.
-
-Deliverables:
-- CI/release gate config
-- Rollout and rollback runbook
-```
-
-## Prompt 15: End-to-End Production Readiness Suite
-
-```text
-Task:
-Build full end-to-end tests from enrichment to final decision for each launched product.
-
-Requirements:
-- Validate deterministic outputs on fixed fixtures.
-- Cover success, degraded provider, and invalid-input paths.
-
-Implementation details:
-- Add product fixture packs and test orchestration.
-- Ensure tests run in CI with clear failure diagnostics.
-
-Testing:
-- Full E2E tests for Wave 1, Wave 2, Wave 3 products.
-
-Deliverables:
-- E2E suite
-- Final readiness summary
 ```
 
 ---
@@ -442,10 +453,14 @@ Add missing high-risk tests, especially threshold boundaries and malformed input
 3. Prompt 3 + Guard-Rail A
 4. Prompt 4 + Prompt 5 + Guard-Rail B
 5. Prompt 6 + Guard-Rail E
-6. Prompts 7-11 with Guard-Rail C and E after each product
-7. Prompt 12 + Guard-Rail B
-8. Prompt 13 + Guard-Rail C
-9. Prompt 14 + Guard-Rail D
-10. Prompt 15 + Full A/B/C/D/E audits
+6. Prompt 7 + Guard-Rail C and E
+7. Prompt 8 + Guard-Rail C and E
+8. Prompt 9 + Guard-Rail C and E
+9. Prompt 10 + Guard-Rail B
+10. Prompt 11 + Guard-Rail C
+11. Prompt 12 + Guard-Rail D
+12. Prompt 13 + Full A/B/C/D/E audits for primary launch
+13. Prompt 14 + Guard-Rail C and E
+14. Prompt 15 + Guard-Rail C and E
 
-This sequence keeps integration risk low while progressively delivering products.
+This sequence prioritizes primary-product launch value while keeping integration and compliance risk low.

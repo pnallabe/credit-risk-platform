@@ -305,7 +305,7 @@ class CreditRiskPipeline:
         try:
             # ── Stage 1: Data Ingestion ──────────────────────────────────
             ingest_result = with_retry(
-                lambda: self._ingestion.execute({"records": applicant_dicts, "source": source}),
+                lambda: self._ingestion.execute({"records": applicant_dicts, "source": source, "tenant_id": tenant_id}),
                 attempts=self._retry,
                 backoff=self._backoff,
             )
@@ -334,6 +334,7 @@ class CreditRiskPipeline:
                 lambda: self._modeling.execute({
                     "feature_df": feat_result.payload["feature_df"],
                     "use_challenger": use_challenger,
+                    "tenant_id": tenant_id,
                 }),
                 attempts=self._retry,
                 backoff=self._backoff,

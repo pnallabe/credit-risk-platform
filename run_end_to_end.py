@@ -2,7 +2,7 @@
 """
 run_end_to_end.py
 ==================
-Production-grade end-to-end execution script for the Credit Risk Platform.
+Production-grade end-to-end execution script for HelixDecision.
 
 Demonstrates the complete pipeline:
   ApplicantInput JSON  →  DataIngestion  →  FeatureEngineering
@@ -219,7 +219,7 @@ def main(args: argparse.Namespace) -> int:
 
     # ── Display results ──────────────────────────────────────────────────
     print(f"\n{'━' * 60}")
-    print(f"  CREDIT RISK PLATFORM — PIPELINE RUN: {run.run_id}")
+    print(f"  HELIXDECISION — PIPELINE RUN: {run.run_id}")
     print(f"  Status   : {run.status.upper()}")
     print(f"  Duration : {elapsed:.3f}s")
     print(f"{'━' * 60}")
@@ -296,7 +296,7 @@ def main(args: argparse.Namespace) -> int:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Credit Risk Platform — End-to-End Pipeline Runner",
+        description="HelixDecision — End-to-End Pipeline Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

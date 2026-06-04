@@ -22,9 +22,10 @@ BUREAU_PROVIDER       — "plaid" | "finicity" | "mock" (default: "plaid")
 Public API
 ----------
 >>> from ingestion_api.src.plaid_connector import enrich_with_cash_flow_data
+>>> token = os.getenv("PLAID_ACCESS_TOKEN")  # never hardcode tokens
 >>> summary = await enrich_with_cash_flow_data(
 ...     application_id="app-123",
-...     access_token="access-sandbox-xxxx",
+...     access_token=token,
 ... )
 >>> summary.monthly_net_income          # float
 >>> summary.nsfv_last_90_days           # int (insufficient fund events)
@@ -45,6 +46,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 import httpx
+from dateutil import parser as date_parser
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +61,214 @@ PLAID_BASE_URLS = {
     "production": "https://production.plaid.com",
 }
 
-BUREAU_PROVIDER: Literal["plaid", "finicity", "mock"] = (  # type: ignore[assignment]
-    os.getenv("BUREAU_PROVIDER", "plaid")  # type: ignore[assignment]
-)
+SUPPORTED_BUREAU_PROVIDERS = {"plaid", "finicity", "openbankproject", "mock"}
+BUREAU_PROVIDER = os.getenv("BUREAU_PROVIDER", "plaid")
 
 CASH_FLOW_LOOKBACK_DAYS = 90   # default transaction lookback window
+
+
+class ProviderConnectorError(RuntimeError):
+    """Raised when a provider cannot be queried or returns unusable data."""
+
+    def __init__(
+        self,
+        provider: str,
+        application_id: str,
+        error_category: str,
+        message: str,
+    ) -> None:
+        super().__init__(message)
+        self.provider = provider
+        self.application_id = application_id
+        self.error_category = error_category
+
+
+class ProviderConfigurationError(ProviderConnectorError):
+    """Raised when provider configuration is incomplete or invalid."""
+
+
+class ProviderResponseError(ProviderConnectorError):
+    """Raised when a provider returns an unexpected response payload."""
+
+
+def _log_provider_event(
+    level: int,
+    message: str,
+    *,
+    provider: str,
+    application_id: str,
+    error_category: str = "info",
+) -> None:
+    logger.log(
+        level,
+        "%s provider=%s application_id=%s error_category=%s",
+        message,
+        provider,
+        application_id,
+        error_category,
+    )
+
+
+def _normalize_provider_name(provider: Optional[str]) -> str:
+    if not provider:
+        return "plaid"
+    normalized = provider.strip().lower().replace("-", "_")
+    if normalized in {"obp", "open_bank_project", "openbankproject"}:
+        return "openbankproject"
+    if normalized not in SUPPORTED_BUREAU_PROVIDERS:
+        return "plaid"
+    return normalized
+
+
+def _configured_provider_name() -> str:
+    return _normalize_provider_name(os.getenv("BUREAU_PROVIDER", "plaid"))
+
+
+def _safe_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_date_string(value: Any) -> str:
+    if not value:
+        return "1970-01-01"
+    if isinstance(value, date):
+        return value.isoformat()
+    try:
+        parsed = date_parser.parse(str(value))
+    except (ValueError, TypeError, OverflowError):
+        return "1970-01-01"
+    return parsed.date().isoformat()
+
+
+def _coerce_transaction_list(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
+    transactions = payload.get("transactions")
+    if isinstance(transactions, list):
+        return [txn for txn in transactions if isinstance(txn, dict)]
+    data = payload.get("data")
+    if isinstance(data, list):
+        return [txn for txn in data if isinstance(txn, dict)]
+    return []
+
+
+async def _request_json_with_retries(
+    method: str,
+    url: str,
+    *,
+    provider: str,
+    application_id: str,
+    headers: Optional[Dict[str, str]] = None,
+    json_payload: Optional[Dict[str, Any]] = None,
+    params: Optional[Dict[str, Any]] = None,
+    error_category: str = "upstream_http_error",
+    retries: int = 3,
+    timeout: int = 30,
+    empty_status_codes: Optional[set[int]] = None,
+) -> Dict[str, Any]:
+    last_exception: Optional[Exception] = None
+    for attempt in range(retries):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_payload,
+                    params=params,
+                )
+            if empty_status_codes and response.status_code in empty_status_codes:
+                return {}
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ProviderResponseError(
+                    provider=provider,
+                    application_id=application_id,
+                    error_category="schema_mismatch",
+                    message="Provider response must be a JSON object",
+                )
+            return payload
+        except ProviderConnectorError as exc:
+            raise exc
+        except (httpx.HTTPError, ValueError) as exc:
+            last_exception = exc
+            if attempt < retries - 1:
+                await asyncio.sleep(0.1 * (2 ** attempt))
+                continue
+            raise ProviderResponseError(
+                provider=provider,
+                application_id=application_id,
+                error_category=error_category,
+                message=f"{provider} request failed for {application_id}: {exc}",
+            ) from exc
+    raise ProviderResponseError(
+        provider=provider,
+        application_id=application_id,
+        error_category=error_category,
+        message=f"{provider} request failed for {application_id}: {last_exception}",
+    )
+
+
+class BankDataConnectorBase:
+    """Provider-agnostic bank data connector interface."""
+
+    provider_name = "unknown"
+
+    async def get_cash_flow_summary(
+        self,
+        application_id: str,
+        access_token: Optional[str] = None,
+        lookback_days: int = CASH_FLOW_LOOKBACK_DAYS,
+    ) -> "BankDataSummary":
+        raise NotImplementedError
+
+
+def _resolve_provider_choice(
+    application_id: str,
+    plaid_access_token: Optional[str],
+    finicity_customer_id: Optional[str],
+    provider: Optional[str] = None,
+) -> str:
+    requested = _normalize_provider_name(provider or _configured_provider_name())
+
+    if requested == "mock":
+        return "mock"
+
+    if requested == "openbankproject":
+        if os.getenv("OBP_BASE_URL"):
+            return "openbankproject"
+        _log_provider_event(
+            logging.WARNING,
+            "Open Bank Project configuration missing; using fallback provider",
+            provider=requested,
+            application_id=application_id,
+            error_category="configuration_missing",
+        )
+        return "plaid" if plaid_access_token else "mock"
+
+    if requested == "finicity":
+        if finicity_customer_id and os.getenv("FINICITY_PARTNER_ID"):
+            return "finicity"
+        _log_provider_event(
+            logging.WARNING,
+            "Finicity configuration missing; using fallback provider",
+            provider=requested,
+            application_id=application_id,
+            error_category="configuration_missing",
+        )
+        return "plaid" if plaid_access_token else "mock"
+
+    if plaid_access_token:
+        return "plaid"
+    if finicity_customer_id and os.getenv("FINICITY_PARTNER_ID"):
+        return "finicity"
+    return "mock"
 
 
 # ---------------------------------------------------------------------------
@@ -181,8 +386,10 @@ class BankDataSummary:
 # ---------------------------------------------------------------------------
 
 
-class PlaidConnector:
+class PlaidConnector(BankDataConnectorBase):
     """Async Plaid API client for bank account data enrichment."""
+
+    provider_name = "plaid"
 
     def __init__(self) -> None:
         self.client_id = os.getenv("PLAID_CLIENT_ID", "")
@@ -198,6 +405,7 @@ class PlaidConnector:
     async def create_link_token(
         self,
         user_id: str,
+        client_name: Optional[str] = None,
         products: Optional[List[str]] = None,
         country_codes: Optional[List[str]] = None,
     ) -> str:
@@ -211,15 +419,20 @@ class PlaidConnector:
         payload = {
             **self._auth_payload(),
             "user": {"client_user_id": user_id},
-            "client_name": "ILOL Credit Platform",
+            "client_name": client_name or "HelixDecision",
             "products": products or ["transactions", "income_verification"],
             "country_codes": country_codes or ["US"],
             "language": "en",
         }
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(f"{self.base_url}/link/token/create", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = await _request_json_with_retries(
+            "POST",
+            f"{self.base_url}/link/token/create",
+            provider=self.provider_name,
+            application_id=user_id,
+            headers=self._headers(),
+            json_payload=payload,
+            error_category="link_token_create",
+        )
         return data["link_token"]
 
     async def exchange_public_token(self, public_token: str) -> str:
@@ -228,19 +441,29 @@ class PlaidConnector:
         Returns the ``access_token``.
         """
         payload = {**self._auth_payload(), "public_token": public_token}
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(f"{self.base_url}/item/public_token/exchange", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = await _request_json_with_retries(
+            "POST",
+            f"{self.base_url}/item/public_token/exchange",
+            provider=self.provider_name,
+            application_id=public_token,
+            headers=self._headers(),
+            json_payload=payload,
+            error_category="token_exchange",
+        )
         return data["access_token"]
 
     async def get_accounts(self, access_token: str) -> List[PlaidAccount]:
         """Fetch linked accounts for an access_token."""
         payload = {**self._auth_payload(), "access_token": access_token}
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(f"{self.base_url}/accounts/get", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        data = await _request_json_with_retries(
+            "POST",
+            f"{self.base_url}/accounts/get",
+            provider=self.provider_name,
+            application_id=access_token,
+            headers=self._headers(),
+            json_payload=payload,
+            error_category="account_fetch",
+        )
 
         accounts = []
         for a in data.get("accounts", []):
@@ -289,10 +512,15 @@ class PlaidConnector:
             if cursor:
                 payload["cursor"] = cursor
 
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(f"{self.base_url}/transactions/get", json=payload)
-                resp.raise_for_status()
-                data = resp.json()
+            data = await _request_json_with_retries(
+                "POST",
+                f"{self.base_url}/transactions/get",
+                provider=self.provider_name,
+                application_id=access_token,
+                headers=self._headers(),
+                json_payload=payload,
+                error_category="transaction_fetch",
+            )
 
             for t in data.get("transactions", []):
                 all_txns.append(
@@ -318,12 +546,18 @@ class PlaidConnector:
         """Fetch Plaid Income verification results."""
         payload = {**self._auth_payload(), "access_token": access_token}
         try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(f"{self.base_url}/income/verification/paystubs/get", json=payload)
-                if resp.status_code in (400, 404):
-                    return []
-                resp.raise_for_status()
-                data = resp.json()
+            data = await _request_json_with_retries(
+                "POST",
+                f"{self.base_url}/income/verification/paystubs/get",
+                provider=self.provider_name,
+                application_id=access_token,
+                headers=self._headers(),
+                json_payload=payload,
+                error_category="income_verification",
+                empty_status_codes={400, 404},
+            )
+        except ProviderConnectorError:
+            return []
         except Exception:
             return []
 
@@ -342,6 +576,53 @@ class PlaidConnector:
                 )
             )
         return streams
+
+    async def get_cash_flow_summary(
+        self,
+        application_id: str,
+        access_token: Optional[str] = None,
+        lookback_days: int = CASH_FLOW_LOOKBACK_DAYS,
+    ) -> BankDataSummary:
+        if not access_token:
+            raise ProviderConfigurationError(
+                provider=self.provider_name,
+                application_id=application_id,
+                error_category="missing_access_token",
+                message="plaid access token is required",
+            )
+
+        try:
+            accounts, txns, income_streams = await asyncio.gather(
+                self.get_accounts(access_token),
+                self.get_transactions(access_token, lookback_days=lookback_days),
+                self.get_income_verification(access_token),
+            )
+        except ProviderConnectorError:
+            raise
+        except Exception as exc:
+            _log_provider_event(
+                logging.ERROR,
+                "Plaid enrichment failed",
+                provider=self.provider_name,
+                application_id=application_id,
+                error_category="upstream_failure",
+            )
+            raise ProviderResponseError(
+                provider=self.provider_name,
+                application_id=application_id,
+                error_category="upstream_failure",
+                message=str(exc),
+            ) from exc
+
+        return _build_bank_data_summary(
+            application_id=application_id,
+            provider=self.provider_name,
+            lookback_days=lookback_days,
+            accounts=accounts,
+            txns=txns,
+            income_streams=income_streams,
+            data_source_ref=None,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +699,210 @@ def _analyse_transactions(
     }
 
 
+def _build_bank_data_summary(
+    *,
+    application_id: str,
+    provider: str,
+    lookback_days: int,
+    accounts: List[PlaidAccount],
+    txns: List[PlaidTransaction],
+    income_streams: List[IncomeStream],
+    data_source_ref: Optional[str] = None,
+) -> BankDataSummary:
+    cf = _analyse_transactions(txns, lookback_days)
+
+    net_income = sum(stream.monthly_amount for stream in income_streams)
+    if net_income == 0.0:
+        net_income = cf["avg_monthly_inflow"]
+
+    income_confidence = statistics.mean(stream.confidence for stream in income_streams) if income_streams else 0.3
+    checking_accounts = [account for account in accounts if account.subtype == "checking"]
+    savings_accounts = [account for account in accounts if account.subtype == "savings"]
+    current_balances = [account.balance_current or 0.0 for account in accounts]
+
+    return BankDataSummary(
+        application_id=application_id,
+        provider=provider,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        lookback_days=lookback_days,
+        monthly_net_income=net_income,
+        monthly_gross_income_est=net_income * 1.28,
+        income_streams=income_streams,
+        income_confidence=income_confidence,
+        avg_monthly_inflow=cf["avg_monthly_inflow"],
+        avg_monthly_outflow=cf["avg_monthly_outflow"],
+        avg_monthly_end_balance=statistics.mean(current_balances) if current_balances else 0.0,
+        min_balance_90d=min(current_balances, default=0.0),
+        max_balance_90d=max(current_balances, default=0.0),
+        nsfv_last_90_days=cf["nsfv_last_90_days"],
+        returned_payment_count=cf["returned_payment_count"],
+        gambling_transaction_count=cf["gambling_transaction_count"],
+        payday_loan_detected=cf["payday_loan_detected"],
+        large_unusual_deposit_count=cf["large_unusual_deposit_count"],
+        account_count=len(accounts),
+        has_checking_account=bool(checking_accounts),
+        has_savings_account=bool(savings_accounts),
+        account_ids=[account.account_id for account in accounts],
+        data_source_ref=data_source_ref,
+    )
+
+
+class OpenBankProjectConnector(BankDataConnectorBase):
+    """Adapter for Open Bank Project / open-banking endpoints."""
+
+    provider_name = "openbankproject"
+
+    def __init__(self) -> None:
+        self.base_url = os.getenv("OBP_BASE_URL", "").rstrip("/")
+        self.bank_id = os.getenv("OBP_BANK_ID", "")
+        self.access_token = os.getenv("OBP_ACCESS_TOKEN", "")
+        self.consumer_key = os.getenv("OBP_CONSUMER_KEY", "")
+        self.consumer_secret = os.getenv("OBP_CONSUMER_SECRET", "")
+
+    def _headers(self, access_token: Optional[str] = None) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        token = access_token or self.access_token
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        elif self.consumer_key and self.consumer_secret:
+            headers["X-Consumer-Key"] = self.consumer_key
+            headers["X-Consumer-Secret"] = self.consumer_secret
+        return headers
+
+    def _require_base_url(self, application_id: str) -> None:
+        if not self.base_url:
+            raise ProviderConfigurationError(
+                provider=self.provider_name,
+                application_id=application_id,
+                error_category="configuration",
+                message="OBP_BASE_URL not configured",
+            )
+
+    def _map_account(self, raw: Dict[str, Any]) -> PlaidAccount:
+        balances = raw.get("balance") or raw.get("balances") or {}
+        account_type = str(raw.get("type") or raw.get("account_type") or "depository").strip().lower()
+        subtype = raw.get("subtype") or raw.get("product") or raw.get("account_type")
+
+        if account_type in {"current", "checking", "cash"}:
+            account_type = "depository"
+
+        return PlaidAccount(
+            account_id=str(raw.get("account_id") or raw.get("id") or uuid.uuid4()),
+            name=str(raw.get("name") or raw.get("label") or raw.get("nickname") or "OBP Account"),
+            official_name=raw.get("official_name") or raw.get("label"),
+            type=account_type,
+            subtype=str(subtype).strip().lower() if subtype else None,
+            balance_available=_safe_float(balances.get("available")),
+            balance_current=_safe_float(balances.get("current", balances.get("balance"))),
+            currency=str(balances.get("iso_currency_code") or balances.get("currency") or "USD").upper(),
+        )
+
+    def _map_transaction(self, raw: Dict[str, Any], fallback_account_id: str) -> PlaidTransaction:
+        amount = _safe_float(raw.get("amount") or raw.get("value") or raw.get("transactionAmount"),) or 0.0
+        category = raw.get("category") or raw.get("categories") or []
+        if not isinstance(category, list):
+            category = [str(category)]
+        merchant_name = raw.get("merchant_name") or raw.get("merchant") or raw.get("counterparty")
+
+        return PlaidTransaction(
+            transaction_id=str(raw.get("transaction_id") or raw.get("id") or uuid.uuid4()),
+            account_id=str(raw.get("account_id") or fallback_account_id or raw.get("accountId") or ""),
+            amount=amount,
+            date=_safe_date_string(raw.get("date") or raw.get("posted_at") or raw.get("bookingDate")),
+            name=str(raw.get("name") or raw.get("description") or merchant_name or "OBP transaction"),
+            merchant_name=str(merchant_name) if merchant_name not in (None, "") else None,
+            category=[str(item) for item in category if item not in (None, "")],
+            pending=bool(raw.get("pending", False)),
+            payment_channel=str(raw.get("payment_channel") or raw.get("channel") or "other"),
+        )
+
+    async def get_accounts(self, access_token: str) -> List[PlaidAccount]:
+        self._require_base_url(access_token)
+        account_path = f"/obp/v5.1.0/banks/{self.bank_id}/accounts" if self.bank_id else "/obp/v5.1.0/accounts"
+        payload = {"access_token": access_token}
+        data = await _request_json_with_retries(
+            "GET",
+            f"{self.base_url}{account_path}",
+            provider=self.provider_name,
+            application_id=access_token,
+            headers=self._headers(access_token),
+            json_payload=payload,
+            error_category="account_fetch",
+        )
+        records = data.get("accounts") or data.get("data") or []
+        return [self._map_account(record) for record in records if isinstance(record, dict)]
+
+    async def get_transactions(
+        self,
+        access_token: str,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
+        lookback_days: int = CASH_FLOW_LOOKBACK_DAYS,
+    ) -> List[PlaidTransaction]:
+        self._require_base_url(access_token)
+        if end_date is None:
+            end_date = date.today().isoformat()
+        if start_date is None:
+            start_date = (date.today() - timedelta(days=lookback_days)).isoformat()
+
+        account_path = f"/obp/v5.1.0/banks/{self.bank_id}/accounts" if self.bank_id else "/obp/v5.1.0/accounts"
+        txn_path = "/transactions"
+
+        account_data = await _request_json_with_retries(
+            "GET",
+            f"{self.base_url}{account_path}",
+            provider=self.provider_name,
+            application_id=access_token,
+            headers=self._headers(access_token),
+            json_payload={"access_token": access_token},
+            error_category="account_fetch",
+        )
+        accounts = account_data.get("accounts") or account_data.get("data") or []
+
+        mapped: List[PlaidTransaction] = []
+        for account in accounts:
+            if not isinstance(account, dict):
+                continue
+            account_id = str(account.get("account_id") or account.get("id") or "")
+            txn_data = await _request_json_with_retries(
+                "GET",
+                f"{self.base_url}{txn_path}",
+                provider=self.provider_name,
+                application_id=access_token,
+                headers=self._headers(access_token),
+                json_payload={
+                    "access_token": access_token,
+                    "account_id": account_id,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                },
+                error_category="transaction_fetch",
+            )
+            for txn in _coerce_transaction_list(txn_data):
+                mapped.append(self._map_transaction(txn, account_id))
+
+        return mapped
+
+    async def get_cash_flow_summary(
+        self,
+        application_id: str,
+        access_token: Optional[str] = None,
+        lookback_days: int = CASH_FLOW_LOOKBACK_DAYS,
+    ) -> BankDataSummary:
+        resolved_access_token = access_token or self.access_token or application_id
+        accounts = await self.get_accounts(resolved_access_token)
+        txns = await self.get_transactions(resolved_access_token, lookback_days=lookback_days)
+        return _build_bank_data_summary(
+            application_id=application_id,
+            provider=self.provider_name,
+            lookback_days=lookback_days,
+            accounts=accounts,
+            txns=txns,
+            income_streams=[],
+            data_source_ref=None,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Mock provider (for development / testing)
 # ---------------------------------------------------------------------------
@@ -469,7 +954,7 @@ def _generate_mock_bank_data(application_id: str) -> BankDataSummary:
 # ---------------------------------------------------------------------------
 
 
-class FinicityConnector:
+class FinicityConnector(BankDataConnectorBase):
     """Minimal Finicity (now Mastercard Open Banking) connector.
 
     Produces BankDataSummary with the same structure as PlaidConnector.
@@ -482,7 +967,12 @@ class FinicityConnector:
         self.partner_id = os.getenv("FINICITY_PARTNER_ID", "")
         self.base_url = "https://api.finicity.com"
 
-    async def get_cash_flow_summary(self, customer_id: str, lookback_days: int = 90) -> BankDataSummary:
+    async def get_cash_flow_summary(
+        self,
+        customer_id: str,
+        access_token: Optional[str] = None,
+        lookback_days: int = 90,
+    ) -> BankDataSummary:
         if not self.app_key:
             logger.warning("FINICITY_APP_KEY not set; returning mock data")
             return _generate_mock_bank_data(customer_id)
@@ -494,25 +984,58 @@ class FinicityConnector:
         return _generate_mock_bank_data(customer_id)
 
 
+class MockConnector(BankDataConnectorBase):
+    provider_name = "mock"
+
+    async def get_cash_flow_summary(
+        self,
+        application_id: str,
+        access_token: Optional[str] = None,
+        lookback_days: int = CASH_FLOW_LOOKBACK_DAYS,
+    ) -> BankDataSummary:
+        return _generate_mock_bank_data(application_id)
+
+
+def _provider_connector_for_name(provider_name: str) -> BankDataConnectorBase:
+    if provider_name == "plaid":
+        return PlaidConnector()
+    if provider_name == "finicity":
+        return FinicityConnector()
+    if provider_name == "openbankproject":
+        return OpenBankProjectConnector()
+    if provider_name == "mock":
+        return MockConnector()
+    raise ProviderConfigurationError(
+        provider=provider_name,
+        application_id="unknown",
+        error_category="configuration",
+        message=f"Unsupported provider: {provider_name}",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main enrichment entry point (provider-agnostic)
 # ---------------------------------------------------------------------------
 
 
 async def enrich_with_cash_flow_data(
-    application_id: str,
+    application_id: Optional[str] = None,
     plaid_access_token: Optional[str] = None,
     finicity_customer_id: Optional[str] = None,
     lookback_days: int = CASH_FLOW_LOOKBACK_DAYS,
-    force_provider: Optional[Literal["plaid", "finicity", "mock"]] = None,
+    force_provider: Optional[Literal["plaid", "finicity", "openbankproject", "mock"]] = None,
+    *,
+    user_id: Optional[str] = None,
+    access_token: Optional[str] = None,
+    provider: Optional[str] = None,
 ) -> BankDataSummary:
     """Enrich an application with bank cash flow data.
 
-    Provider selection order:
-    1. ``force_provider`` if set
-    2. ``BUREAU_PROVIDER`` env var
-    3. Auto-detect: use Plaid if ``plaid_access_token`` provided,
-       Finicity if ``finicity_customer_id`` provided, else mock.
+     Provider selection order:
+     1. ``force_provider`` / ``provider`` if set
+     2. ``BUREAU_PROVIDER`` env var
+     3. Auto-detect: use Plaid if ``plaid_access_token`` or ``access_token`` provided,
+         Finicity if ``finicity_customer_id`` provided, else mock.
 
     Parameters
     ----------
@@ -531,80 +1054,59 @@ async def enrich_with_cash_flow_data(
     -------
     BankDataSummary
     """
-    provider = force_provider or BUREAU_PROVIDER
+    resolved_application_id = application_id or user_id
+    if not resolved_application_id:
+        raise ValueError("application_id is required")
 
-    # Fall back to mock if neither token is provided
-    if not plaid_access_token and not finicity_customer_id and provider not in ("mock",):
-        logger.info(
-            "No bank credentials provided for application %s; falling back to mock data",
-            application_id,
-        )
-        provider = "mock"
-
-    if provider == "mock":
-        return _generate_mock_bank_data(application_id)
-
-    if provider == "finicity":
-        connector = FinicityConnector()
-        return await connector.get_cash_flow_summary(finicity_customer_id or application_id, lookback_days)
-
-    # Default: Plaid
-    if not plaid_access_token:
-        logger.warning("Plaid provider selected but no access_token; using mock")
-        return _generate_mock_bank_data(application_id)
-
-    plaid = PlaidConnector()
-    try:
-        accounts, txns, income_streams = await asyncio.gather(
-            plaid.get_accounts(plaid_access_token),
-            plaid.get_transactions(plaid_access_token, lookback_days=lookback_days),
-            plaid.get_income_verification(plaid_access_token),
-        )
-    except Exception as exc:
-        logger.exception("Plaid API call failed for application %s: %s", application_id, exc)
-        return _generate_mock_bank_data(application_id)
-
-    # Cash flow analytics
-    cf = _analyse_transactions(txns, lookback_days)
-
-    # Compute monthly net income from income streams
-    net_income = sum(s.monthly_amount for s in income_streams)
-    if net_income == 0.0:
-        # Fall back to cash-flow based income estimate
-        net_income = cf["avg_monthly_inflow"]
-    income_confidence = (
-        statistics.mean(s.confidence for s in income_streams) if income_streams else 0.3
+    resolved_plaid_access_token = plaid_access_token or access_token
+    requested_provider = provider or force_provider
+    provider_name = _resolve_provider_choice(
+        resolved_application_id,
+        resolved_plaid_access_token,
+        finicity_customer_id,
+        provider=requested_provider,
     )
 
-    # Balance stats
-    checking = [a for a in accounts if a.subtype == "checking"]
-    savings_accounts = [a for a in accounts if a.subtype == "savings"]
-    current_balances = [a.balance_current or 0.0 for a in accounts]
+    if not resolved_plaid_access_token and not finicity_customer_id and provider_name != "mock":
+        _log_provider_event(
+            logging.INFO,
+            "No bank credentials provided; using mock provider",
+            provider=provider_name,
+            application_id=resolved_application_id,
+            error_category="fallback",
+        )
+        provider_name = "mock"
 
-    return BankDataSummary(
-        application_id=application_id,
-        provider="plaid",
-        generated_at=datetime.now(timezone.utc).isoformat(),
+    connector = _provider_connector_for_name(provider_name)
+
+    if provider_name == "plaid":
+        if not resolved_plaid_access_token:
+            logger.warning("Plaid provider selected but no access_token; using mock")
+            return _generate_mock_bank_data(resolved_application_id)
+        return await connector.get_cash_flow_summary(
+            resolved_application_id,
+            access_token=resolved_plaid_access_token,
+            lookback_days=lookback_days,
+        )
+
+    if provider_name == "finicity":
+        return await connector.get_cash_flow_summary(
+            finicity_customer_id or resolved_application_id,
+            access_token=resolved_plaid_access_token,
+            lookback_days=lookback_days,
+        )
+
+    if provider_name == "openbankproject":
+        return await connector.get_cash_flow_summary(
+            resolved_application_id,
+            access_token=resolved_plaid_access_token,
+            lookback_days=lookback_days,
+        )
+
+    return await connector.get_cash_flow_summary(
+        resolved_application_id,
+        access_token=resolved_plaid_access_token,
         lookback_days=lookback_days,
-        monthly_net_income=net_income,
-        monthly_gross_income_est=net_income * 1.28,
-        income_streams=income_streams,
-        income_confidence=income_confidence,
-        avg_monthly_inflow=cf["avg_monthly_inflow"],
-        avg_monthly_outflow=cf["avg_monthly_outflow"],
-        avg_monthly_end_balance=statistics.mean(current_balances) if current_balances else 0.0,
-        min_balance_90d=min(current_balances, default=0.0),
-        max_balance_90d=max(current_balances, default=0.0),
-        nsfv_last_90_days=cf["nsfv_last_90_days"],
-        returned_payment_count=cf["returned_payment_count"],
-        gambling_transaction_count=cf["gambling_transaction_count"],
-        payday_loan_detected=cf["payday_loan_detected"],
-        large_unusual_deposit_count=cf["large_unusual_deposit_count"],
-        account_count=len(accounts),
-        has_checking_account=bool(checking),
-        has_savings_account=bool(savings_accounts),
-        account_ids=[a.account_id for a in accounts],
-        data_source_ref=None,  # Would be Plaid item_id in production
     )
 
 

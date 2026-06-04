@@ -2,192 +2,197 @@
 
 ## 1. Purpose
 
-This plan defines how to deliver a portfolio of credit products using the existing credit-risk platform and open-banking cash-flow data as the shared underwriting backbone.
+This plan defines how to deliver a prioritized portfolio of credit products using the existing platform and open-banking cash-flow data as the shared underwriting backbone.
 
-Target products:
-- Personal Loan
+Primary products (build first):
 - BNPL
+- Personal Loan
+- SMB Loan (Secured)
+
+Secondary products (build later):
 - Credit Builder / Secured Card
 - Overdraft / Cash Advance
-- SMB Working Capital
-- Mainstream Credit Card (later)
-- Auto Loan (later)
-- Mortgage (later)
+- Mainstream Credit Card
+- Auto Loan
+- Mortgage
 
 ## 2. Delivery Principles
 
-- Build one shared data plane first, then add product policies on top.
+- Build one shared data plane first, then layer product policies.
 - Keep a single canonical feature path for API and agent workflows.
-- Treat every product as configuration + policy + tests, not custom pipeline forks.
-- Require compliance and safety gates before rollout.
-- Roll out by ascending data and regulatory complexity.
+- Treat each product as configuration + policy + tests, not bespoke pipeline forks.
+- Require compliance, explainability, and release-safety gates before rollout.
+- Prioritize products by near-term launch value and data readiness.
 
 ## 3. Release Waves
 
-### Wave 1 (fastest path, strongest fit)
-- Personal Loan
+### Wave 1 (Primary Launch)
 - BNPL
+- Personal Loan
+- SMB Loan (Secured)
 
-### Wave 2 (same consumer cash-flow foundation)
+### Wave 2 (Consumer Expansion)
 - Credit Builder / Secured Card
 - Overdraft / Cash Advance
 
-### Wave 3 (business extension)
-- SMB Working Capital
-
-### Wave 4 (additional external data required)
+### Wave 3 (Additional Data Dependency)
 - Mainstream Credit Card
 - Auto Loan
 
-### Wave 5 (heavy compliance + collateral)
+### Wave 4 (High Compliance + Collateral Complexity)
 - Mortgage
 
 ## 4. Timeline (12 Weeks)
 
-## Phase 1 (Weeks 1-3): Shared Open-Banking Backbone
+## Phase 1 (Weeks 1-2): Shared Open-Banking Backbone
 
 Scope:
-- Add provider-agnostic bank connector interface.
-- Integrate Open Bank Project adapter into existing enrichment flow.
-- Normalize transactions/accounts/balances to canonical bank summary contract.
-- Ensure thin-file feature enrichment consumes canonical summary fields.
-- Add integration tests for enrichment -> features -> decision path.
+- Finalize provider-agnostic bank connector interface.
+- Integrate Open Bank Project adapter in enrichment flow.
+- Normalize transactions/accounts/balances into canonical summary contract.
+- Harden enriched cash-flow contract and feature parity path.
+- Add deterministic enrichment -> features integration tests.
 
 Deliverables:
-- Open-banking adapter abstraction with provider selection.
-- Stable enriched payload contract.
-- Contract and integration test suites.
-- Observability events and error taxonomy.
+- Connector abstraction with provider selection/fallback.
+- Stable enriched payload contract for product policies.
+- Contract + integration tests.
+- Structured observability and error taxonomy.
 
 Exit criteria:
 - Existing provider behavior remains backward compatible.
-- End-to-end enrichment path is deterministic on fixed fixtures.
-- Canary and API baseline thresholds pass in staging.
+- End-to-end enrichment path deterministic on fixed fixtures.
+- Staging API baseline thresholds pass.
 
-## Phase 2 (Weeks 4-6): Wave 1 Product Delivery
-
-Scope:
-- Implement Personal Loan product profile and thresholds.
-- Implement BNPL product profile and short-horizon controls.
-- Add product-specific reason-code mapping and explainability checks.
-- Add scenario backtests for approval-rate and expected-loss proxies.
-
-Deliverables:
-- Product policy configs and tests.
-- Product regression dashboard output artifacts.
-- Updated runbooks for declines/manual review routing.
-
-Exit criteria:
-- Product policy tests pass including boundary cases.
-- Explainability outputs map to expected decline reasons.
-- Regression metrics within pre-defined tolerances.
-
-## Phase 3 (Weeks 7-8): Wave 2 Product Delivery
+## Phase 2 (Weeks 3-5): BNPL + Personal Loan Delivery
 
 Scope:
-- Add Credit Builder / Secured Card policy profile.
-- Add Overdraft / Cash Advance policy profile.
-- Add conservative limit and repayment guardrails.
+- Harden Personal Loan profile (boundary-safe decisions, deterministic reasons).
+- Harden BNPL profile (fraud routing, concurrent plan limits, merchant constraints).
+- Add explainability/regression tests for both products.
 
 Deliverables:
-- Policy rules and test fixtures for thin-file cohorts.
-- Product-level QA report with fraud sensitivity checks.
+- Personal Loan and BNPL policy configs + tests.
+- Boundary fixture packs and decision trace samples.
+- Product runbooks for decline/manual-review routing.
 
 Exit criteria:
-- Stable decision distribution on thin-file slices.
-- No severe regression in fraud/risk controls.
+- Boundary tests pass for PD/DTI/amount/fraud thresholds.
+- Reason mappings are deterministic and complete.
+- Regression metrics within agreed tolerances.
 
-## Phase 4 (Weeks 9-10): Wave 3 Product Delivery
+## Phase 3 (Weeks 6-8): SMB Loan (Secured) Delivery
 
 Scope:
-- Add SMB Working Capital profile using business cash-flow signals.
-- Add business-specific underwriting fields and DSCR-style checks.
-- Add monitoring slices for seasonal and volatile revenue cohorts.
+- Implement secured SMB profile with business cash-flow + collateral gates.
+- Add required underwriting fields for secured SMB decisions.
+- Add DSCR and collateral stress tests (low DSCR, high LTV, insufficient collateral coverage).
 
 Deliverables:
-- SMB policy profiles and tests.
-- Performance and fairness summaries for business cohorts.
+- SMB secured policy rules and validation logic.
+- Test fixtures for collateral quality and repayment capacity scenarios.
+- Segment-level risk summary and monitoring slice definitions.
 
 Exit criteria:
-- SMB policy pass/fail behavior validated on curated fixtures.
-- Monitoring and alerting configured for new product segment.
+- Secure/decline/review behavior is deterministic at boundaries.
+- Collateral and DSCR gates validated on fixed fixtures.
+- Monitoring hooks defined for SMB secured segment.
 
-## Phase 5 (Weeks 11-12): Hardening and Controlled Launch
+## Phase 4 (Weeks 9-10): Cross-Product Hardening
 
 Scope:
-- Cross-product regression suite and release gates.
-- Progressive canary rollout automation.
-- Incident rollback and policy hotfix runbooks.
+- Build cross-product simulation harness for Wave 1 products.
+- Add reason-code + explainability regression suite.
+- Add policy/feature consistency audits and remediation patches.
 
 Deliverables:
-- Cross-product test harness and CI gates.
-- Launch checklist and runbooks.
+- Simulation harness with baseline approval/review/decline distributions.
+- Cross-product explainability regression tests.
+- Audit reports (schema, feature-policy consistency, operational safety, test adequacy).
 
 Exit criteria:
-- All launch-gate checks pass.
-- Canary rollout completes with no blocker incidents.
+- Cross-product simulation outputs are deterministic.
+- Explainability and reason-code suites pass for all primary products.
+- High-risk audit findings resolved or explicitly waived.
+
+## Phase 5 (Weeks 11-12): Launch Gates and Controlled Rollout
+
+Scope:
+- Add CI release gates for primary products.
+- Configure canary rollout/rollback triggers.
+- Finalize launch checklists and incident playbooks.
+
+Deliverables:
+- CI gate config and canary automation.
+- Rollout and rollback runbook.
+- End-to-end primary-product readiness suite.
+
+Exit criteria:
+- All release gates pass.
+- Canary completes with no blocker incidents.
+- Final readiness summary approved.
 
 ## 5. Workstreams
 
 ### A) Data and Integrations
 - Connector abstraction and provider adapters.
-- Mapping and normalization to canonical contract.
-- Retry/backoff and provider-failure fallback strategy.
+- Canonical bank summary mapping and fallback behavior.
+- Retry/backoff, timeout, and explicit error semantics.
 
 ### B) Feature Engineering
-- Canonical feature parity between API and agent paths.
-- Cash-flow stability, affordability, and thin-file composite improvements.
+- Canonical API/agent feature parity.
+- Cash-flow and thin-file synthesis hardening.
 - Deterministic feature tests and versioning.
 
 ### C) Product Policy Engine
-- Product profiles with explicit required fields.
-- Fraud/DTI/amount/rule gate standardization.
-- Tenant override safety checks and auditability.
+- Explicit required-field validation by product profile.
+- BNPL + Personal Loan + SMB secured policy hardening.
+- Tenant override safeguards and auditability.
 
 ### D) Explainability and Compliance
 - Product-level decline reason consistency.
-- Adverse-action text coverage and regression checks.
-- Audit trail completeness for each decision stage.
+- Adverse-action coverage and regression checks.
+- Audit trail completeness at each decision stage.
 
 ### E) QA, Observability, and Release
-- End-to-end test matrix by product and edge case.
+- End-to-end test matrix for primary products.
 - Monitoring for drift, failure rates, and latency.
-- Canary thresholds and auto-rollback criteria.
+- Canary thresholds and automated rollback criteria.
 
 ## 6. Risks and Mitigations
 
-- Risk: Provider payload variability and schema drift.
-  Mitigation: strict normalization layer + contract tests + fallback path.
+- Risk: Provider schema drift or degraded enrichment.
+  Mitigation: strict normalization + contract tests + fallback provider path.
 
-- Risk: Policy inconsistency across products.
-  Mitigation: single policy evaluator and shared decision gate semantics.
+- Risk: Feature-policy mismatch across API and agent paths.
+  Mitigation: canonical feature module + CI parity harness.
 
-- Risk: Feature divergence between API and agent pipelines.
-  Mitigation: one canonical feature module + parity tests in CI.
+- Risk: Secured SMB collateral data quality variability.
+  Mitigation: explicit required-field validation + collateral sanity checks + manual review routing.
+
+- Risk: Decision inconsistency at boundary thresholds.
+  Mitigation: boundary fixtures + snapshot regression tests + deterministic reason mapping.
 
 - Risk: Rollout instability.
-  Mitigation: staged canary rollout, health checks, and rollback playbook.
-
-- Risk: Compliance gaps under rapid iteration.
-  Mitigation: mandatory reason-code and audit-log checks in release gates.
+  Mitigation: release gates + canary rollback automation + runbooks.
 
 ## 7. Definition of Done (Per Product)
 
-- Product policy profile implemented.
-- Product test fixtures for approve/decline/manual-review boundaries.
-- Explainability reason mapping validated.
+- Product policy profile implemented and validated.
+- Boundary fixtures for approve/reject/manual-review paths.
+- Explainability and reason-code mapping regression coverage.
 - Operational metrics and alerting added.
-- Documentation and runbook updated.
+- Product docs and runbooks updated.
 
 ## 8. Suggested Branching and PR Strategy
 
-- One feature branch per phase or sub-epic.
-- Keep PRs vertical and testable (connector, features, policy, tests).
-- Require green CI + explicit release-gate checks before merge.
+- One branch per vertical slice (connector, feature parity, product profile, regression suite).
+- Keep PRs small, testable, and tied to one roadmap prompt cluster.
+- Require green CI plus explicit release-gate checks before merge.
 
 ## 9. Immediate Next Steps
 
-1. Implement connector abstraction and OBP adapter behind existing enrichment API.
-2. Lock contract tests for normalized bank summary payload.
-3. Ship Personal Loan and BNPL policy profiles first.
-4. Add cross-product simulation harness before Wave 2 rollout.
+1. Finalize connector and contract hardening for reliable enrichment inputs.
+2. Ship BNPL and Personal Loan hardening with boundary and reason-code suites.
+3. Implement SMB Secured Loan profile with collateral + DSCR validations.
+4. Add cross-product simulation harness and launch gates for primary products.

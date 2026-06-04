@@ -1,5 +1,5 @@
 # =============================================================================
-# Credit Risk Platform — Google Cloud Build
+# HelixDecision — Google Cloud Build
 # Builds & deploys all backend services to Cloud Run
 #
 # Services deployed:

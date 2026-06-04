@@ -65,6 +65,12 @@ _ALT_DATA_COLS = [
     "bank_account_age_months",
     "avg_monthly_cash_inflow",
     "avg_monthly_cash_outflow",
+    # Open-banking enrichment signals (optional — contributed only when present)
+    "nsfv_last_90_days",
+    "returned_payment_count",
+    "income_confidence",
+    "avg_monthly_end_balance",
+    "min_balance_90d",
 ]
 
 
@@ -93,32 +99,87 @@ def _compute_thin_file_alt_score(
 
     Each signal contributes only when the standard bureau features are
     absent/null.  Result is clipped to [0, 1].
+
+    Positive contributors
+    ---------------------
+    rent_payment_months      : on-time rent history (capped at 12 months)
+    utility_payment_months   : on-time utility history (capped at 12 months)
+    mobile_data_score        : normalised mobile-usage signal
+    bank_account_age_months  : account tenure as stability proxy
+    cash_flow_stability      : (inflow - outflow) / inflow ratio
+    income_confidence        : confidence of open-banking income estimate
+
+    Negative contributors (deductions for risk signals)
+    ---------------------------------------------------
+    nsfv_last_90_days        : NSF / overdraft events — each event reduces score
+    returned_payment_count   : returned payments — each event reduces score
+    balance_stress           : penalty when min_balance_90d is negative (chronic overdraft)
+
+    Model-risk note (for reviewers)
+    --------------------------------
+    All weights default to conservative values.  Callers may override via
+    ``alt_weights`` for tenant-specific tuning; overrides must be four-eyes
+    approved via the Config Registry.  The score is clipped to [0, 1] so
+    downstream model inputs remain bounded.
     """
     if weights is None:
         weights = {}
 
-    rent_w = weights.get("rent_payment_weight", 0.05)
-    util_w = weights.get("utility_payment_weight", 0.03)
-    mob_w = weights.get("mobile_data_weight", 0.10)
-    bank_w = weights.get("bank_age_weight", 0.04)
+    rent_w      = weights.get("rent_payment_weight", 0.05)
+    util_w      = weights.get("utility_payment_weight", 0.03)
+    mob_w       = weights.get("mobile_data_weight", 0.10)
+    bank_w      = weights.get("bank_age_weight", 0.04)
+    cf_w        = weights.get("cashflow_stability_weight", 0.06)
+    income_w    = weights.get("income_confidence_weight", 0.04)
+    nsf_pen     = weights.get("nsf_penalty_per_event", 0.03)
+    return_pen  = weights.get("return_payment_penalty_per_event", 0.05)
+    bal_stress_w = weights.get("balance_stress_weight", 0.05)
 
     score = pd.Series(0.0, index=df.index)
 
+    # --- Positive contributions ---
     if "rent_payment_months" in df.columns:
-        score += (df["rent_payment_months"].fillna(0) / 12) * rent_w
+        score += (df["rent_payment_months"].fillna(0).clip(0, 12) / 12) * rent_w
     if "utility_payment_months" in df.columns:
-        score += (df["utility_payment_months"].fillna(0) / 12) * util_w
+        score += (df["utility_payment_months"].fillna(0).clip(0, 12) / 12) * util_w
     if "mobile_data_score" in df.columns:
-        score += df["mobile_data_score"].fillna(0) * mob_w
+        score += df["mobile_data_score"].fillna(0).clip(0, 1) * mob_w
     if "bank_account_age_months" in df.columns:
-        score += (df["bank_account_age_months"].fillna(0) / 12) * bank_w
+        score += (df["bank_account_age_months"].fillna(0).clip(0, 24) / 24) * bank_w
 
-    # Cash-flow stability proxy
+    # Cash-flow stability proxy: (inflow - outflow) / inflow
     if "avg_monthly_cash_inflow" in df.columns and "avg_monthly_cash_outflow" in df.columns:
         inflow = df["avg_monthly_cash_inflow"].fillna(0)
         outflow = df["avg_monthly_cash_outflow"].fillna(0)
         cashflow_ratio = (inflow - outflow) / inflow.clip(lower=1)
-        score += cashflow_ratio.clip(0, 1) * 0.05
+        score += cashflow_ratio.clip(0, 1) * cf_w
+
+    # Income confidence from open-banking enrichment
+    if "income_confidence" in df.columns:
+        score += df["income_confidence"].fillna(0).clip(0, 1) * income_w
+
+    # --- Negative contributions (deductions) ---
+    if "nsfv_last_90_days" in df.columns:
+        nsf_events = df["nsfv_last_90_days"].fillna(0).clip(lower=0)
+        # Diminishing deduction: capped at 3 events (max -0.09 at default weight)
+        score -= nsf_events.clip(0, 3) * nsf_pen
+
+    if "returned_payment_count" in df.columns:
+        returned = df["returned_payment_count"].fillna(0).clip(lower=0)
+        # Each returned payment is a stronger signal; capped at 2 events
+        score -= returned.clip(0, 2) * return_pen
+
+    if "min_balance_90d" in df.columns:
+        # Negative minimum balance → chronic overdraft stress penalty
+        min_bal = df["min_balance_90d"].fillna(0)
+        overdraft_depth = (-min_bal).clip(lower=0)  # 0 when never negative
+        # Normalise against avg inflow; penalty proportional to overdraft depth
+        if "avg_monthly_cash_inflow" in df.columns:
+            inflow_ref = df["avg_monthly_cash_inflow"].fillna(1).clip(lower=1)
+            overdraft_fraction = (overdraft_depth / inflow_ref).clip(0, 1)
+        else:
+            overdraft_fraction = overdraft_depth.clip(0, 1) / 1000.0
+        score -= overdraft_fraction * bal_stress_w
 
     return score.clip(0, 1)
 

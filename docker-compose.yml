@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# Credit Risk Platform — Full Stack (Multi-Domain)
+# HelixDecision — Full Stack (Multi-Domain)
 # ---------------------------------------------------------------------------
 # Services:
 #   postgres              :5432  — Loans DB (loan apps, funded loans, customers)

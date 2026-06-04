@@ -4,7 +4,14 @@ Pytest configuration and shared fixtures
 
 import pytest
 import os
+import sys
+from pathlib import Path
 from unittest.mock import Mock, MagicMock
+
+
+_INGESTION_API_DIR = str(Path(__file__).parent.parent)
+if _INGESTION_API_DIR not in sys.path:
+    sys.path.insert(0, _INGESTION_API_DIR)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -15,7 +22,7 @@ def setup_test_environment():
     os.environ["GCP_PROJECT_ID"] = "test-project"
     os.environ["JWT_SECRET"] = "test-secret-key"
     os.environ["JWT_ISSUER"] = "risk-platform"
-    
+
 
 @pytest.fixture(autouse=True)
 def mock_gcp_clients(monkeypatch):
@@ -27,18 +34,18 @@ def mock_gcp_clients(monkeypatch):
     mock_storage.bucket.return_value = mock_bucket
     mock_bucket.blob.return_value = mock_blob
     mock_bucket.exists.return_value = True
-    
+
     # Mock publisher client
     mock_publisher = Mock()
     mock_future = Mock()
     mock_future.result.return_value = "test-message-id"
     mock_publisher.publish.return_value = mock_future
-    
+
     # Patch the global clients
-    import main
-    main.storage_client = mock_storage
-    main.publisher_client = mock_publisher
-    
+    import src.main as ingestion_main
+    ingestion_main.storage_client = mock_storage
+    ingestion_main.publisher_client = mock_publisher
+
     return {
         "storage": mock_storage,
         "publisher": mock_publisher,

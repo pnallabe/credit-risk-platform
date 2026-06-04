@@ -1,0 +1,99 @@
+{
+  "tenant_id": "plaid_data",
+  "product_type": "CREDIT_CARD",
+  "generated_at": "2026-06-04T19:55:53.996638+00:00",
+  "policy_version": "v1",
+  "policy_parameters": {
+    "product_type": "CREDIT_CARD",
+    "pd_threshold_approve": 0.06,
+    "pd_threshold_refer": 0.12,
+    "fraud_reject_threshold": 0.65,
+    "fraud_review_threshold": 0.38,
+    "max_dti": 0.48,
+    "min_open_accounts": 0,
+    "min_loan_amount_usd": 500.0,
+    "max_loan_amount_usd": 40000.0,
+    "base_apr": 14.99,
+    "max_apr": 29.99,
+    "required_features": [
+      "avg_monthly_inflow",
+      "avg_monthly_outflow",
+      "net_monthly_cash_flow",
+      "cash_flow_stability_score",
+      "nsf_count_90d",
+      "bank_account_age_months",
+      "credit_score",
+      "debt_to_income",
+      "num_open_accounts"
+    ],
+    "extra_rules": [
+      "revolving_utilization_check",
+      "min_credit_age_6_months",
+      "plaid_nsf_gate_3",
+      "plaid_savings_balance_min_100",
+      "plaid_min_net_cashflow_positive"
+    ],
+    "description": "Revolving credit card \u2014 Plaid-data tenant.",
+    "regulatory_notes": "CARD Act, TILA Reg Z. Plaid data used as supplemental underwriting signal under FCRA. Adverse action reason codes must reference Plaid data attributes where dispositive."
+  },
+  "regulatory_compliance_checklist": [
+    {
+      "regulation": "CARD Act",
+      "requirement": "45-day notice before APR increases; ability-to-pay assessment",
+      "status": "required"
+    },
+    {
+      "regulation": "TILA / Reg Z",
+      "requirement": "Schumer Box disclosure at application",
+      "status": "required"
+    },
+    {
+      "regulation": "ECOA / Reg B",
+      "requirement": "Adverse action citing Plaid data if used in decision",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA",
+      "requirement": "Plaid supplemental data disclosed in adverse action",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7604",
+      "requirement": "Permissible purpose (underwriting) documented per transaction",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7615",
+      "requirement": "Adverse action notice identifies Plaid as data source and provides contact details",
+      "status": "required"
+    },
+    {
+      "regulation": "Plaid ToS",
+      "requirement": "End-user OAuth consent captured via Plaid Link; consent record retained 7 years",
+      "status": "required"
+    },
+    {
+      "regulation": "CCPA / CPRA",
+      "requirement": "Plaid bank data included in data-subject access and erasure workflows",
+      "status": "required"
+    },
+    {
+      "regulation": "SOC 2 Type II",
+      "requirement": "Plaid API credentials stored in secrets manager; not in code or config files",
+      "status": "required"
+    }
+  ],
+  "underwriting_data_sources": {
+    "primary": "Plaid (bank account cash-flow)",
+    "secondary": "Credit bureau (Experian / Equifax / TransUnion)",
+    "tertiary": "Alt-data (rent, utilities, mobile via ingestion-api)"
+  },
+  "plaid_features_used": [
+    "avg_monthly_inflow",
+    "avg_monthly_outflow",
+    "net_monthly_cash_flow",
+    "cash_flow_stability_score",
+    "nsf_count_90d",
+    "bank_account_age_months"
+  ]
+}

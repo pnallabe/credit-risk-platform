@@ -88,7 +88,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="Credit Risk Platform API",
+    title="HelixDecision API",
     description="Production-grade multi-agent credit decisioning API",
     version="1.0.0",
     lifespan=lifespan,

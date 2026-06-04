@@ -53,6 +53,9 @@ ProductType = Literal[
     "BNPL",
     "MORTGAGE",
     "SMALL_BUSINESS_LOAN",
+    "SMB_SECURED_LOAN",
+    "CREDIT_BUILDER",
+    "OVERDRAFT_CASH_ADVANCE",
 ]
 
 ALL_PRODUCT_TYPES: List[ProductType] = [
@@ -62,6 +65,9 @@ ALL_PRODUCT_TYPES: List[ProductType] = [
     "BNPL",
     "MORTGAGE",
     "SMALL_BUSINESS_LOAN",
+    "SMB_SECURED_LOAN",
+    "CREDIT_BUILDER",
+    "OVERDRAFT_CASH_ADVANCE",
 ]
 
 
@@ -245,6 +251,83 @@ _DEFAULT_POLICIES: Dict[ProductType, ProductPolicy] = {
                          "Dodd-Frank §1071 small business lending data collection (CFPB Final Rule 2023). "
                          "SBA 7(a) / 504 programs have additional eligibility and use-of-proceeds rules.",
     ),
+    "SMB_SECURED_LOAN": ProductPolicy(
+        product_type="SMB_SECURED_LOAN",
+        pd_threshold_approve=0.10,
+        pd_threshold_refer=0.20,
+        fraud_reject_threshold=0.55,
+        fraud_review_threshold=0.30,
+        max_dti=0.55,                  # tighter DTI for secured lending
+        min_open_accounts=0,
+        min_loan_amount_usd=25_000.0,
+        max_loan_amount_usd=10_000_000.0,
+        base_apr=6.50,
+        max_apr=30.0,
+        required_features=[
+            "annual_revenue", "years_in_business",
+            "debt_service_coverage_ratio", "business_type",
+            "collateral_type", "collateral_value", "collateral_ltv",
+        ],
+        extra_rules=[
+            "years_in_business_min_1",
+            "dscr_min_1_25",
+            "collateral_ltv_max_80pct",
+            "collateral_adequacy_check",
+            "cra_small_business_tracking",
+        ],
+        description="SMB secured term loan backed by real estate, equipment, or inventory collateral",
+        regulatory_notes="ECOA / Reg B applies. UCC-1 filing required for non-real-estate collateral. "
+                         "Dodd-Frank §1071 data collection required. "
+                         "Environmental review required for real-estate collateral ≥$500k.",
+    ),
+    "CREDIT_BUILDER": ProductPolicy(
+        product_type="CREDIT_BUILDER",
+        pd_threshold_approve=0.15,        # elevated tolerance for no/thin credit
+        pd_threshold_refer=0.25,
+        fraud_reject_threshold=0.65,
+        fraud_review_threshold=0.40,
+        max_dti=0.55,
+        min_open_accounts=0,              # by design — for applicants with no tradelines
+        min_loan_amount_usd=200.0,
+        max_loan_amount_usd=3_000.0,      # conservative limit
+        base_apr=0.0,                     # typically fee-based or 0% for secured card
+        max_apr=28.99,
+        required_features=["annual_income"],
+        extra_rules=[
+            "deposit_secured_limit_check",
+            "no_active_bankruptcy_check",
+            "manual_review_if_no_bureau_signal",
+        ],
+        description="Credit builder loan or secured card for thin-file / no-credit applicants",
+        regulatory_notes="Subject to TILA Reg Z, ECOA Reg B, FCRA adverse action. "
+                         "Secured card: must disclose security deposit terms. "
+                         "CFPB guidance: avoid fee harvesting products (fees > 25% of credit limit).",
+    ),
+    "OVERDRAFT_CASH_ADVANCE": ProductPolicy(
+        product_type="OVERDRAFT_CASH_ADVANCE",
+        pd_threshold_approve=0.12,
+        pd_threshold_refer=0.20,
+        fraud_reject_threshold=0.70,
+        fraud_review_threshold=0.45,
+        max_dti=0.60,
+        min_open_accounts=0,
+        min_loan_amount_usd=50.0,
+        max_loan_amount_usd=1_000.0,      # small-dollar cap
+        base_apr=0.0,                     # flat-fee model; APR disclosure still required
+        max_apr=36.0,                     # MAPR cap for MLA covered borrowers
+        required_features=["annual_income", "avg_monthly_cash_inflow"],
+        extra_rules=[
+            "overdraft_frequency_check",
+            "net_inflow_adequacy_check",
+            "no_active_bankruptcy_check",
+            "repayment_cadence_check",
+        ],
+        description="Short-term cash advance or overdraft protection using payroll / cash-flow signals",
+        regulatory_notes="CFPB small-dollar lending rule applies. "
+                         "TILA Reg Z APR disclosure required even for flat-fee products. "
+                         "State small-loan act limits vary; confirm per-state before origination. "
+                         "MLA ≤36% MAPR required for covered borrowers.",
+    ),
 }
 
 
@@ -292,7 +375,7 @@ class ProductPolicyEvaluationInput:
     annual_income_usd: float = 0.0
     debt_to_income_ratio: float = 0.0
     num_open_accounts: int = 0
-    credit_score: int = 0
+    credit_score: Optional[int] = None  # None = not provided / thin-file
     # Auto / Mortgage specific
     vehicle_ltv: Optional[float] = None
     vehicle_age_years: Optional[int] = None
@@ -306,6 +389,20 @@ class ProductPolicyEvaluationInput:
     business_type: Optional[str] = None
     # BNPL specific
     payment_history: Optional[str] = None
+    concurrent_bnpl_plans: Optional[int] = None   # active BNPL plans at time of application
+    merchant_category: Optional[str] = None       # merchant category for BNPL gating
+    # SMB Secured Loan specific
+    collateral_type: Optional[str] = None         # e.g. "real_estate", "equipment", "inventory"
+    collateral_value: Optional[float] = None
+    collateral_ltv: Optional[float] = None        # loan / collateral value ratio (0–1+)
+    # Credit Builder specific
+    security_deposit_amount: Optional[float] = None  # secured-card deposit (equals credit limit)
+    has_active_bankruptcy: Optional[bool] = None
+    has_bureau_signal: Optional[bool] = None      # False = truly no-file
+    # Overdraft / Cash Advance specific
+    avg_monthly_cash_inflow: Optional[float] = None   # monthly inflow from open-banking
+    overdraft_events_90d: Optional[int] = None        # NSF / overdraft events last 90 days
+    paycheck_cadence: Optional[str] = None        # "weekly", "biweekly", "monthly", "irregular"
     # Feature override map (e.g. from policy simulator)
     feature_overrides: Dict[str, Any] = field(default_factory=dict)
 
@@ -313,6 +410,73 @@ class ProductPolicyEvaluationInput:
 # ---------------------------------------------------------------------------
 # Validation / rules engine
 # ---------------------------------------------------------------------------
+
+# Maps policy required_features field names to their corresponding attribute
+# on ProductPolicyEvaluationInput (or None if same name).
+_REQUIRED_FEATURE_ATTR_MAP: Dict[str, str] = {
+    "credit_score": "credit_score",
+    "debt_to_income": "debt_to_income_ratio",
+    "num_open_accounts": "num_open_accounts",
+    "annual_income": "annual_income_usd",
+    "annual_revenue": "annual_revenue",
+    "years_in_business": "years_in_business",
+    "debt_service_coverage_ratio": "debt_service_coverage_ratio",
+    "business_type": "business_type",
+    "vehicle_ltv": "vehicle_ltv",
+    "vehicle_age_years": "vehicle_age_years",
+    "ltv": "ltv",
+    "property_type": "property_type",
+    "occupancy_type": "occupancy_type",
+    "payment_history": "payment_history",
+    "collateral_type": "collateral_type",
+    "collateral_value": "collateral_value",
+    "collateral_ltv": "collateral_ltv",
+    "avg_monthly_cash_inflow": "avg_monthly_cash_inflow",
+}
+
+
+def validate_required_features(
+    product_type: ProductType,
+    inp: "ProductPolicyEvaluationInput",
+    policy: Optional["ProductPolicy"] = None,
+) -> List[str]:
+    """Return a list of missing required-feature flag strings for *product_type*.
+
+    Flags are formatted as ``"MISSING_REQUIRED_FIELD:<field_name>"`` so they
+    can be included in ``pre_qualification_flags`` and FCRA reason codes.
+
+    Parameters
+    ----------
+    product_type:
+        The product being evaluated.
+    inp:
+        The evaluation input (populated fields are checked against None / zero).
+    policy:
+        Optional pre-fetched policy; if None the default policy is used.
+
+    Returns
+    -------
+    List[str]
+        Empty list if all required fields are present.
+    """
+    if policy is None:
+        policy = get_product_policy(product_type)
+
+    missing: List[str] = []
+    for field_name in policy.required_features:
+        attr = _REQUIRED_FEATURE_ATTR_MAP.get(field_name, field_name)
+        value = getattr(inp, attr, None)
+        # Treat None and zero as "missing" for numeric required fields
+        # (0.0 annual income / 0.0 inflow is not a valid supplied value)
+        is_missing = value is None or (isinstance(value, (int, float)) and value == 0 and attr not in {"num_open_accounts"})
+        if is_missing:
+            missing.append(f"MISSING_REQUIRED_FIELD:{field_name}")
+            logger.info(
+                "validate_required_features: product=%s missing field=%s",
+                product_type,
+                field_name,
+            )
+    return missing
 
 
 def _check_extra_rules(
@@ -349,10 +513,17 @@ def _check_extra_rules(
             results[rule] = True   # Requires vehicle data
 
         elif rule == "max_concurrent_bnpl_plans_4":
-            results[rule] = inp.num_open_accounts <= 20  # proxy check
+            if inp.concurrent_bnpl_plans is not None:
+                results[rule] = inp.concurrent_bnpl_plans <= 4
+            else:
+                results[rule] = inp.num_open_accounts <= 20  # proxy when explicit count absent
 
         elif rule == "merchant_category_check":
-            results[rule] = True
+            blocked_categories = {"gambling", "adult", "firearms", "crypto_exchange"}
+            if inp.merchant_category:
+                results[rule] = inp.merchant_category.lower() not in blocked_categories
+            else:
+                results[rule] = True
 
         elif rule == "qm_ability_to_repay_check":
             results[rule] = inp.debt_to_income_ratio <= 0.43
@@ -374,7 +545,7 @@ def _check_extra_rules(
             results[rule] = True
 
         elif rule == "min_credit_score_620":
-            results[rule] = inp.credit_score >= 620
+            results[rule] = inp.credit_score is not None and inp.credit_score >= 620
 
         elif rule == "years_in_business_min_1":
             if inp.years_in_business is not None:
@@ -393,6 +564,56 @@ def _check_extra_rules(
 
         elif rule == "cra_small_business_tracking":
             results[rule] = True
+
+        elif rule == "collateral_ltv_max_80pct":
+            if inp.collateral_ltv is not None:
+                results[rule] = inp.collateral_ltv <= 0.80
+            else:
+                results[rule] = True  # Not provided → pass (flagged by required-field check)
+
+        elif rule == "collateral_adequacy_check":
+            # Collateral must cover at least 100% of loan amount
+            if inp.collateral_value is not None and inp.loan_amount_usd > 0:
+                results[rule] = inp.collateral_value >= inp.loan_amount_usd
+            else:
+                results[rule] = True  # Deferred to required-field check
+
+        elif rule == "deposit_secured_limit_check":
+            # Security deposit must equal or exceed loan/credit limit amount
+            if inp.security_deposit_amount is not None and inp.loan_amount_usd > 0:
+                results[rule] = inp.security_deposit_amount >= inp.loan_amount_usd
+            else:
+                results[rule] = True  # Not provided → pass (no deposit product)
+
+        elif rule == "no_active_bankruptcy_check":
+            # Active bankruptcy → hard decline
+            if inp.has_active_bankruptcy is not None:
+                results[rule] = not inp.has_active_bankruptcy
+            else:
+                results[rule] = True  # Not known → pass (flag separately if needed)
+
+        elif rule == "manual_review_if_no_bureau_signal":
+            # No bureau signal → route to manual review (soft rule, not hard decline)
+            # Returns True so pre_qual_passed is unaffected; caller checks fraud_verdict
+            results[rule] = True
+
+        elif rule == "overdraft_frequency_check":
+            # More than 3 overdraft events in last 90 days → decline
+            if inp.overdraft_events_90d is not None:
+                results[rule] = inp.overdraft_events_90d <= 3
+            else:
+                results[rule] = True
+
+        elif rule == "net_inflow_adequacy_check":
+            # Net inflow must cover at least 1.5× the requested advance amount
+            if inp.avg_monthly_cash_inflow is not None and inp.loan_amount_usd > 0:
+                results[rule] = inp.avg_monthly_cash_inflow >= inp.loan_amount_usd * 1.5
+            else:
+                results[rule] = True
+
+        elif rule == "repayment_cadence_check":
+            # Irregular paycheck cadence → refer to manual review (soft rule)
+            results[rule] = True  # Hard decline not triggered; fraud_verdict may escalate
 
         else:
             logger.debug("Unknown extra rule '%s'; defaulting to passed", rule)
@@ -429,6 +650,18 @@ def evaluate_product_policy(
 
     flags: List[str] = []
     policy_codes: List[str] = []
+
+    # --- Required-field validation (Prompt-06) ---
+    missing_flags = validate_required_features(inp.product_type, inp, policy)
+    if missing_flags:
+        flags.extend(missing_flags)
+        policy_codes.append("AA09")   # "Incomplete application — required information missing"
+        logger.info(
+            "evaluate_product_policy: application=%s product=%s missing_fields=%s",
+            inp.application_id,
+            inp.product_type,
+            missing_flags,
+        )
 
     # --- Fraud routing ---
     fp = inp.fraud_probability
@@ -473,7 +706,8 @@ def evaluate_product_policy(
 
     # --- Pre-qualification gate ---
     pre_qual_passed = (
-        fraud_verdict != "REJECT"
+        not missing_flags
+        and fraud_verdict != "REJECT"
         and dti_passed
         and amount_passed
         and accounts_passed

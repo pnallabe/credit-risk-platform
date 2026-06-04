@@ -1,5 +1,5 @@
 
-# Credit Risk Platform for AI Underwriting
+# HelixDecision for AI Underwriting
 
 Turn fragmented lending workflows into one auditable decision pipeline with APIs, policy logic,
 modeling, and explainability built in.
@@ -70,6 +70,13 @@ You can also add a short product GIF in docs/images to show request -> decision 
 - Python 3.11+
 - Git
 - Optional for cloud workflows: gcloud CLI and authenticated GCP project
+
+### Open Banking Setup
+
+The bank-enrichment flow is configured through environment variables in `.env`.
+For live Plaid runs, set `PLAID_CLIENT_ID` and `PLAID_SECRET` and choose a valid `PLAID_ENV`.
+For Open Bank Project, set `OBP_BASE_URL`, `OBP_BANK_ID`, `OBP_ACCESS_TOKEN`, `OBP_CONSUMER_KEY`, and `OBP_CONSUMER_SECRET`.
+If these are not set, the connector falls back to mock behavior where supported, which is useful for local development before testing with real providers.
 
 ### macOS and Linux
 
@@ -198,7 +205,7 @@ If you use this platform in research, internal model governance, or production e
 
 ```bibtex
 @software{credit_risk_platform,
-	title = {Credit Risk Platform for AI Underwriting},
+	title = {HelixDecision for AI Underwriting},
 	year = {2026},
 	publisher = {GitHub},
 	url = {https://github.com/<your-org>/credit-risk-platform}

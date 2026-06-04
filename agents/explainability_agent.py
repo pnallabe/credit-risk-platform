@@ -180,10 +180,10 @@ class ExplainabilityAgent(BaseAgent):
 
         # Build lookup maps
         dec_map: Dict[str, CreditDecision] = {
-            d["application_id"]: CreditDecision(**d) for d in decision_dicts
+            d["application_id"]: CreditDecision(**{**d, "tenant_id": d.get("tenant_id", "default")}) for d in decision_dicts
         }
         score_map: Dict[str, ModelScores] = {
-            s["application_id"]: ModelScores(**s) for s in score_dicts
+            s["application_id"]: ModelScores(**{**s, "tenant_id": s.get("tenant_id", "default")}) for s in score_dicts
         }
         feat_map: Dict[str, Dict[str, float]] = {
             fv["application_id"]: fv.get("features", {}) for fv in fv_dicts
@@ -237,6 +237,7 @@ class ExplainabilityAgent(BaseAgent):
             explanations.append(
                 ExplanationRecord(
                     application_id=app_id,
+                    tenant_id=decision.tenant_id,
                     decision=decision.decision,
                     top_factors=top_factors,
                     adverse_action_text=notice_text,
