@@ -138,6 +138,30 @@ test-ui: ## Run UI Vitest tests for both apps
 .PHONY: test-all
 test-all: test test-agent test-ui ## Run all tests (Python + Node)
 
+.PHONY: test-sprint1
+test-sprint1: ## Sprint 1 — Credit Analyst & Risk Narrative
+	$(PYTEST) tests/test_credit_analyst_agent.py tests/test_risk_narrative_generator.py -v --no-cov
+
+.PHONY: test-sprint2
+test-sprint2: ## Sprint 2 — WoE, SMB PD, Commercial PD, LGD
+	$(PYTEST) tests/test_woe_scorecard.py tests/test_smb_pd_model.py tests/test_commercial_pd_model.py tests/test_lgd_model.py -v --no-cov
+
+.PHONY: test-sprint3
+test-sprint3: ## Sprint 3 — Concentration, Portfolio Snapshot, Rebalancing
+	$(PYTEST) tests/test_concentration_monitor.py tests/test_portfolio_snapshot.py tests/test_portfolio_construction_agent.py -v --no-cov
+
+.PHONY: test-sprint4
+test-sprint4: ## Sprint 4 — Conditional Approval, Alternatives, Covenants
+	$(PYTEST) tests/test_conditional_approval.py tests/test_alternatives.py tests/test_covenant_engine.py -v --no-cov
+
+.PHONY: test-sprint5
+test-sprint5: ## Sprint 5 — Waiver Store, Policy Adherence
+	$(PYTEST) tests/test_waiver_store.py tests/test_policy_adherence.py -v --no-cov
+
+.PHONY: test-sprint6
+test-sprint6: ## Sprint 6 — Fallback Scorer, Escalation Bands, FFIEC
+	$(PYTEST) tests/test_fallback_scorer.py tests/test_escalation_bands.py tests/test_ffiec_call_report.py -v --no-cov
+
 .PHONY: test-cov
 test-cov: ## Run tests with coverage report
 	$(PYTEST) \

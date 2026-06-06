@@ -212,6 +212,12 @@ class ModelScores(BaseModel):
     expected_profit: Optional[float] = None
     model_version: str = "champion"
     scored_at: datetime = Field(default_factory=datetime.utcnow)
+    # S2-D: LGD model scores (default 0.40 until model is available)
+    lgd_score: float = Field(default=0.40, ge=0.0, le=1.0)
+    lgd_band: str = "Medium"
+    # S4-B: confidence interval on PD (fast path: ±0.025; bootstrap: p5/p95)
+    pd_ci_lower: float = 0.0
+    pd_ci_upper: float = 1.0
 
 
 # ---------------------------------------------------------------------------
