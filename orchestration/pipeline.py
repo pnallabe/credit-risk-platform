@@ -43,11 +43,13 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from agents.base import AgentResult, AgentStatus
+from agents.credit_analyst_agent import CreditAnalystAgent
 from agents.data_ingestion_agent import DataIngestionAgent
 from agents.decision_engine_agent import DecisionEngineAgent
 from agents.explainability_agent import ExplainabilityAgent
 from agents.experimentation_agent import ExperimentationAgent
 from agents.feature_engineering_agent import FeatureEngineeringAgent
+from explainability.risk_narrative_generator import generate_risk_narrative
 from agents.bq_writer_agent import BQWriterAgent
 from agents.monitoring_agent import MonitoringAgent
 from agents.risk_modeling_agent import RiskModelingAgent
@@ -162,6 +164,7 @@ class CreditRiskPipeline:
         modeling_agent: RiskModelingAgent,
         decision_agent: DecisionEngineAgent,
         explain_agent: ExplainabilityAgent,
+        credit_analyst_agent: Optional[CreditAnalystAgent] = None,
         monitoring_agent: Optional[MonitoringAgent] = None,
         experimentation_agent: Optional[ExperimentationAgent] = None,
         bq_writer_agent: Optional[BQWriterAgent] = None,
@@ -172,6 +175,7 @@ class CreditRiskPipeline:
         self._modeling = modeling_agent
         self._decision = decision_agent
         self._explain = explain_agent
+        self._credit_analyst = credit_analyst_agent
         self._monitoring = monitoring_agent
         self._experimentation = experimentation_agent
         self._bq_writer = bq_writer_agent
@@ -229,6 +233,11 @@ class CreditRiskPipeline:
         if bq_cfg.get("enabled", True):
             bq_writer = BQWriterAgent(config=cfg)
 
+        ca_cfg = cfg.get("credit_analyst", {})
+        credit_analyst: Optional[CreditAnalystAgent] = None
+        if ca_cfg.get("enabled", True):
+            credit_analyst = CreditAnalystAgent(config=ca_cfg)
+
         pipeline = cls(
             ingestion_agent=DataIngestionAgent(config=cfg.get("data_ingestion", {})),
             feature_agent=FeatureEngineeringAgent(config=cfg.get("feature_engineering", {})),
@@ -238,6 +247,7 @@ class CreditRiskPipeline:
             ),
             decision_agent=DecisionEngineAgent(config=cfg.get("decision_engine", {})),
             explain_agent=ExplainabilityAgent(config=cfg.get("explainability", {})),
+            credit_analyst_agent=credit_analyst,
             monitoring_agent=MonitoringAgent(config=cfg.get("monitoring", {})),
             experimentation_agent=ExperimentationAgent(config=cfg.get("experimentation", {})),
             bq_writer_agent=bq_writer,
@@ -340,7 +350,37 @@ class CreditRiskPipeline:
                 backoff=self._backoff,
             )
             pipeline_run.add_stage(model_result)
-            model_result.raise_on_failure()
+
+            if model_result.status == AgentStatus.FAILURE:
+                _on_fail = self._config.get("risk_modeling", {}).get("on_failure", "abort")
+                if _on_fail == "use_rule_based_fallback":
+                    try:
+                        from decision_engine.rule_based_fallback import rule_based_pd_estimate
+                        from schemas.contracts import ModelScores
+                        _fv_list = feat_result.payload.get("feature_vectors", [])
+                        _fv = (_fv_list[0].features if _fv_list and hasattr(_fv_list[0], "features") else (_fv_list[0] if _fv_list else {}))
+                        _fb_pd, _fb_rationale = rule_based_pd_estimate(_fv if isinstance(_fv, dict) else {})
+                        _fb_scores = ModelScores(pd_score=_fb_pd, model_version="rule_based_fallback")
+                        model_result = model_result.__class__(
+                            agent_name=model_result.agent_name,
+                            status=model_result.status.__class__.SUCCESS,
+                            payload={"model_scores": [_fb_scores]},
+                            metadata={"fallback": True, "rationale": _fb_rationale},
+                        )
+                        try:
+                            from audit.logger import AuditLogger
+                            AuditLogger().write(event_type="RISK_MODEL_FALLBACK", payload={"rationale": _fb_rationale, "pd_score": _fb_pd})
+                        except Exception:
+                            log.warning("Audit write failed for RISK_MODEL_FALLBACK")
+                    except Exception as _fb_err:
+                        log.warning("Rule-based fallback failed: %s", _fb_err)
+                        model_result.raise_on_failure()
+                elif _on_fail == "skip":
+                    log.warning("RiskModelingAgent failed — skipping per config")
+                else:
+                    model_result.raise_on_failure()
+            else:
+                model_result.raise_on_failure()
 
             # ── Stage 4: Decision Engine (pass tenant policy_cutoffs) ────
             dec_payload: Dict[str, Any] = {
@@ -367,6 +407,46 @@ class CreditRiskPipeline:
             })
             pipeline_run.add_stage(explain_result)
 
+            # ── Stage 6: Credit Analyst (non-blocking) ───────────────
+            qualitative_assessment = None
+            risk_narrative_markdown = None
+            if self._credit_analyst is not None:
+                try:
+                    # Use first record's feature vector and model scores
+                    feature_vectors = feat_result.payload.get("feature_vectors", [])
+                    model_scores_list = model_result.payload.get("model_scores", [])
+                    first_fv = feature_vectors[0].features if feature_vectors and hasattr(feature_vectors[0], "features") else (feature_vectors[0] if feature_vectors else {})
+                    first_ms = model_scores_list[0] if model_scores_list else None
+                    first_applicant = (applicant_dicts or [{}])[0]
+                    loan_amount = float(first_applicant.get("loan_amount", 0))
+                    ca_result = self._credit_analyst.execute({
+                        "feature_vector": first_fv if isinstance(first_fv, dict) else (first_fv or {}),
+                        "model_scores": first_ms,
+                        "loan_amount": loan_amount,
+                    })
+                    pipeline_run.add_stage(ca_result)
+                    if ca_result.ok:
+                        qualitative_assessment = ca_result.payload.get("qualitative_assessment")
+                        if qualitative_assessment is not None:
+                            # Extract SHAP top factors if available
+                            explanations = explain_result.payload.get("explanations", [])
+                            shap_factors = None
+                            if explanations:
+                                exp = explanations[0]
+                                top_neg = getattr(exp, "top_negative_factors", None) or (exp.get("top_negative_factors") if isinstance(exp, dict) else None) or []
+                                shap_factors = [(f.get("feature", "") if isinstance(f, dict) else getattr(f, "feature", ""), f.get("shap_value", 0.0) if isinstance(f, dict) else getattr(f, "shap_value", 0.0)) for f in top_neg[:5]]
+                            application_id = first_applicant.get("application_id", run_id)
+                            narrative = generate_risk_narrative(
+                                account_id=application_id,
+                                features=first_fv if isinstance(first_fv, dict) else {},
+                                assessment=qualitative_assessment,
+                                model_scores=first_ms,
+                                shap_top_factors=shap_factors,
+                            )
+                            risk_narrative_markdown = narrative.as_markdown()
+                except Exception as ca_exc:  # noqa: BLE001
+                    logger.warning("CreditAnalystAgent non-fatal error: %s", ca_exc)
+
             # ── Assemble final payload ───────────────────────────────────
             pipeline_run.final_payload = {
                 "run_id": run_id,
@@ -380,6 +460,8 @@ class CreditRiskPipeline:
                 "explanations": explain_result.payload.get("explanations", []),
                 "adverse_action_notices": explain_result.payload.get("adverse_action_notices", []),
                 "quarantined": ingest_result.payload.get("quarantined", []),
+                "qualitative_assessment": qualitative_assessment.dict() if qualitative_assessment is not None else None,
+                "risk_narrative_markdown": risk_narrative_markdown,
             }
 
             pipeline_run.status = "success"

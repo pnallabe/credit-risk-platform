@@ -29,12 +29,15 @@ Public API
 
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger(__name__)
 
 # Make project root importable when run as a script
 sys.path.insert(0, str(Path(__file__).parents[1]))
@@ -63,6 +66,31 @@ REASON_CODE_DESCRIPTIONS: Dict[str, str] = {
 # Risk thresholds (mirror models/credit_risk/predict.py)
 PD_THRESHOLD_LOW = 0.05    # below → low risk → APPROVE at base rate
 PD_THRESHOLD_MEDIUM = 0.10  # 0.05–0.10 → medium risk → APPROVE at priced rate
+
+# ---------------------------------------------------------------------------
+# Escalation band helpers (S6-A Task 3)
+# ---------------------------------------------------------------------------
+
+def _load_escalation_bands(product_type: str) -> tuple[float, float]:
+    """Return (refer_low, refer_high) for *product_type*.
+
+    Resolution order:
+    1. ``config/agent_config.yaml`` ``decision_engine.escalation_bands``
+    2. Hardcoded fallback (PD_THRESHOLD_LOW, PD_THRESHOLD_MEDIUM).
+    """
+    try:
+        import yaml  # type: ignore
+        _cfg_path = Path(__file__).parents[1] / "config" / "agent_config.yaml"
+        with open(_cfg_path) as _f:
+            _cfg = yaml.safe_load(_f)
+        _bands = _cfg.get("decision_engine", {}).get("escalation_bands", [])
+        for _band in _bands:
+            if _band.get("product") == product_type:
+                _lo, _hi = _band["refer_if_pd_between"]
+                return float(_lo), float(_hi)
+    except Exception:
+        pass
+    return PD_THRESHOLD_LOW, PD_THRESHOLD_MEDIUM
 
 # Heuristic thresholds for supplemental reason codes
 DTI_HIGH_THRESHOLD = 0.43       # DTI above this → AA04
@@ -192,6 +220,10 @@ class DecisionResult:
     override_records: List[Any] = field(default_factory=list)
     # GAP-23: Populated only when decision == DECISION_CONDITIONAL.
     conditional_terms: Optional[ConditionalTerms] = None
+    # S4-A: Conditions for conditional approval
+    conditions: List[Any] = field(default_factory=list)
+    # S4-A: Alternative structures for declined applications
+    alternative_structures: List[Any] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +416,13 @@ def make_decision(
     _pd_low    = float(overrides.get("pd_threshold_low", PD_THRESHOLD_LOW))
     _pd_medium = float(overrides.get("pd_threshold",     PD_THRESHOLD_MEDIUM))
 
+    # Per-product escalation bands override the generic thresholds (S6-A)
+    _product_type = getattr(request, "product_type", None) or overrides.get("product_type")
+    if _product_type and "pd_threshold_low" not in overrides and "pd_threshold" not in overrides:
+        _esc_low, _esc_high = _load_escalation_bands(_product_type)
+        _pd_low    = _esc_low
+        _pd_medium = _esc_high
+
     fraud = request.fraud_result
     credit = request.credit_result
     pricing = request.pricing_result
@@ -401,10 +440,63 @@ def make_decision(
         decision = DECISION_APPROVE
 
     elif credit.pd_score <= _pd_medium:
-        decision = DECISION_APPROVE
+        # Within escalation band → MANUAL_REVIEW; generic path → APPROVE
+        if _product_type:
+            decision = DECISION_MANUAL_REVIEW
+        else:
+            decision = DECISION_APPROVE
 
     else:
         decision = DECISION_REJECT
+
+    # ------------------------------------------------------------------
+    # S4-A — Post-decision Conditional Approval check
+    # ------------------------------------------------------------------
+    # If pd_score <= 0.10 (risk-acceptable) but soft conditions fire,
+    # downgrade APPROVE to CONDITIONAL.
+    # Fraud/MANUAL_REVIEW decisions are never overridden.
+    # ------------------------------------------------------------------
+    if decision == DECISION_APPROVE and credit.pd_score <= 0.10:
+        _features = getattr(request, "features", {}) or {}
+        _income_verified = bool(_features.get("income_verified", True))
+        _dti = request.debt_to_income_ratio
+        _num_open = request.num_open_accounts
+        _collateral_coverage = float(_features.get("collateral_coverage_ratio", 0.0))
+        _has_collateral = bool(_features.get("collateral_value"))
+
+        _early_conditions: List[Any] = []
+        try:
+            from decision_engine.conditions import Condition
+            if not _income_verified:
+                _early_conditions.append(Condition(
+                    condition_type="INCOME_VERIFICATION_REQUIRED",
+                    description="Income has not been verified. Verification required before funding.",
+                ))
+            if 0.43 <= _dti <= 0.50:
+                _early_conditions.append(Condition(
+                    condition_type="REDUCED_LIMIT",
+                    description=f"DTI of {_dti:.2f} is elevated. Reduced credit limit recommended.",
+                ))
+            if _has_collateral and 0 < _collateral_coverage < 1.0:
+                _early_conditions.append(Condition(
+                    condition_type="COLLATERAL_REQUIRED",
+                    description=(
+                        f"Collateral coverage ratio of {_collateral_coverage:.2f} is below 1.0. "
+                        "Additional collateral or appraisal required."
+                    ),
+                    min_coverage_ratio=1.0,
+                ))
+            if _num_open < 3:
+                _early_conditions.append(Condition(
+                    condition_type="ADDITIONAL_DOCUMENTATION",
+                    description="Thin credit file (fewer than 3 open trades). Additional documentation required.",
+                    doc_types=["bank_statements", "alternative_credit_data"],
+                ))
+        except ImportError:
+            pass
+
+        if _early_conditions:
+            decision = DECISION_CONDITIONAL
 
     # ------------------------------------------------------------------
     # Step 2 — Build loan terms (only meaningful for APPROVE)
@@ -443,6 +535,24 @@ def make_decision(
     elapsed_ms = int((time.perf_counter_ns() - start_ns) / 1_000_000)
     decision_timestamp = datetime.now(tz=timezone.utc)
 
+    # S4-A — Generate alternative structures for pure rejections
+    _alt_structures: List[Any] = []
+    if decision == DECISION_REJECT:
+        try:
+            from decision_engine.alternative_structures import generate_alternatives
+            _alt_structures = generate_alternatives(
+                request=request,
+                pd_score=credit.pd_score,
+                decision=decision,
+            )
+        except Exception as _alt_exc:
+            log.warning("Alternative structures generation failed (non-fatal): %s", _alt_exc)
+
+    # S4-A — conditions populated during conditional approval path
+    # _early_conditions was built above if decision == CONDITIONAL;
+    # fall back to empty list otherwise.
+    _conditions: List[Any] = locals().get("_early_conditions", [])
+
     return DecisionResult(
         application_id=request.application_id,
         decision=decision,
@@ -452,6 +562,8 @@ def make_decision(
         decision_timestamp=decision_timestamp,
         decision_latency_ms=elapsed_ms,
         override_records=_override_records,
+        conditions=_conditions,
+        alternative_structures=_alt_structures,
     )
 
 

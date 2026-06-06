@@ -622,6 +622,21 @@ def train(args) -> None:
     scorecard.to_json(SCORECARD_PATH, orient="records", indent=2)
     log.info("  Scorecard written → %s", SCORECARD_PATH)
 
+    # ── WoE Scorecard ─────────────────────────────────────────────────────
+    log.info("Building WoE scorecard …")
+    try:
+        from models.credit_risk.woe_scorecard import build_woe_scorecard, save_woe_scorecard
+        woe_df = build_woe_scorecard(
+            model=cal_model,
+            X=X,
+            y=y,
+            feat_names=feat_names,
+        )
+        woe_path = save_woe_scorecard(woe_df, SCORECARD_PATH, log_to_mlflow=False)
+        log.info("  WoE scorecard rows: %d  |  path: %s", len(woe_df), woe_path)
+    except Exception as _woe_exc:  # noqa: BLE001
+        log.warning("WoE scorecard build failed (non-fatal): %s", _woe_exc)
+
     # ── Plots ──────────────────────────────────────────────────────────────
     ks_val = plot_ks(y, y_prob_cal, KS_PLOT)
     plot_feature_importance(final_model, feat_names, IMPORTANCE_PLOT)

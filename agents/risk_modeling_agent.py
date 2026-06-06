@@ -49,6 +49,15 @@ except ImportError:
     _MODELS_AVAILABLE = False
     logger.warning("Model packages not importable — RiskModelingAgent running in stub mode")
 
+# S2-D: LGD model (soft import — falls back to default LGD when not trained)
+try:
+    from models.lgd.predict import predict_lgd as _predict_lgd, DEFAULT_LGD as _DEFAULT_LGD
+    _LGD_AVAILABLE = True
+except ImportError:
+    _LGD_AVAILABLE = False
+    _DEFAULT_LGD = 0.40
+    logger.debug("LGD model package not available — using default LGD %.2f", _DEFAULT_LGD)
+
 
 # ---------------------------------------------------------------------------
 # Stub fallbacks (for CI / unit tests without trained artefacts)
@@ -418,6 +427,14 @@ class RiskModelingAgent(BaseAgent):
         pd_results = self._score_pd(df, use_challenger=use_challenger_pd)
         fraud_results = self._score_fraud(df)
 
+        # ── S2-D: LGD scoring ────────────────────────────────────────────
+        lgd_results: Optional[pd.DataFrame] = None
+        if _LGD_AVAILABLE:
+            try:
+                lgd_results = _predict_lgd(df)
+            except Exception as _lgd_exc:  # noqa: BLE001
+                self._log.warning("LGD scoring failed (non-fatal): %s", _lgd_exc)
+
         # ── Section 21: CC Valuation champion/challenger ─────────────────
         use_val_challenger = self._should_use_challenger(self._val_challenger_pct)
         val_results, val_version_tag = self._score_cc_valuation(df, use_val_challenger)
@@ -472,6 +489,10 @@ class RiskModelingAgent(BaseAgent):
                     expected_loss=exp_loss,
                     expected_profit=exp_profit,
                     model_version=model_version,
+                    lgd_score=float(lgd_results.iloc[i]["lgd_score"]) if lgd_results is not None else _DEFAULT_LGD,
+                    lgd_band=str(lgd_results.iloc[i]["lgd_band"]) if lgd_results is not None else "Medium",
+                    pd_ci_lower=max(0.0, round(pd_score - 0.025, 6)),
+                    pd_ci_upper=min(1.0, round(pd_score + 0.025, 6)),
                 )
             )
 

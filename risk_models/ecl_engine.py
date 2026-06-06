@@ -354,3 +354,67 @@ def check_sicr(
     if days_past_due is not None and int(days_past_due) >= int(dpd_threshold):
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# S2-D: Helper — build ExposureRecord from ModelScores
+# ---------------------------------------------------------------------------
+
+def exposure_record_from_model_scores(
+    model_scores,
+    outstanding_balance: float,
+    credit_limit: float,
+    product: str = "credit_card",
+    months_on_book: int = 12,
+    contractual_maturity_months: int = 60,
+    ccf: float = 0.50,
+    stage: int = 1,
+    fallback_lgd: float = 0.40,
+) -> ExposureRecord:
+    """Construct an ExposureRecord from a ModelScores object (or dict).
+
+    Uses model_scores.lgd_score when present and non-default; otherwise falls
+    back to ``fallback_lgd`` (the Basel-floor conservative estimate).
+
+    The default LGD sentinel value (0.40) indicates the LGD model has not
+    been scored — in this case the fallback is used instead.
+    """
+    _DEFAULT_LGD_SENTINEL = 0.40
+
+    if hasattr(model_scores, "lgd_score"):
+        lgd_val = float(model_scores.lgd_score)
+    elif isinstance(model_scores, dict):
+        lgd_val = float(model_scores.get("lgd_score", fallback_lgd))
+    else:
+        lgd_val = fallback_lgd
+
+    # If value equals the default sentinel, treat as unscored → use fallback
+    if abs(lgd_val - _DEFAULT_LGD_SENTINEL) < 1e-6:
+        lgd_val = fallback_lgd
+
+    if hasattr(model_scores, "pd_score"):
+        pd_val = float(model_scores.pd_score)
+    elif isinstance(model_scores, dict):
+        pd_val = float(model_scores.get("pd_score", 0.05))
+    else:
+        pd_val = 0.05
+
+    if hasattr(model_scores, "application_id"):
+        app_id = str(model_scores.application_id)
+    elif isinstance(model_scores, dict):
+        app_id = str(model_scores.get("application_id", "unknown"))
+    else:
+        app_id = "unknown"
+
+    return ExposureRecord(
+        application_id=app_id,
+        product=product,
+        outstanding_balance=float(outstanding_balance),
+        credit_limit=float(credit_limit),
+        months_on_book=int(months_on_book),
+        pd_12m=float(pd_val),
+        lgd=float(lgd_val),
+        ccf=float(ccf),
+        stage=stage,  # type: ignore[arg-type]
+        contractual_maturity_months=int(contractual_maturity_months),
+    )

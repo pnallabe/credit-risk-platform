@@ -3,6 +3,16 @@
 # All runtime thresholds and tuning knobs live here — no hardcoding in code.
 # =============================================================================
 
+# ── Credit Analyst Agent ──────────────────────────────────────────────────────
+credit_analyst:
+  enabled: true
+  # Minimum collateral coverage ratio before COLLATERAL_SHORTFALL flag fires
+  collateral_shortfall_threshold: 0.80
+  # Cash advance as a fraction of credit limit before HIGH_CASH_ADVANCE flag fires
+  high_cash_advance_ratio: 0.30
+  # Number of missed payments in last 12 months before EXCESSIVE_MISSED_PMTS fires
+  missed_payment_threshold: 2
+
 # ── Data Ingestion Agent ─────────────────────────────────────────────────────
 data_ingestion:
   schema_version: "1.0.0"
@@ -69,10 +79,22 @@ risk_modeling:
     target_fraud_rate: 0.03
     min_precision: 0.85
     min_auc: 0.80
+  bootstrap_enabled: false   # true = 11-draw CI; false = ±0.025 fast path
 
 # ── Decision Engine Agent ────────────────────────────────────────────────────
 decision_engine:
   policy_version: "v1"
+  escalation_bands:
+    - product: "credit_card"
+      refer_if_pd_between: [0.08, 0.12]
+    - product: "personal_loan"
+      refer_if_pd_between: [0.07, 0.11]
+    - product: "mortgage"
+      refer_if_pd_between: [0.05, 0.09]
+    - product: "smb_loan"
+      refer_if_pd_between: [0.10, 0.16]
+    - product: "commercial_loan"
+      refer_if_pd_between: [0.06, 0.10]
   # Hard policy rules (applied BEFORE model score)
   # P0.3: conditions are now expressed in the safe DSL schema
   # (decision_engine/policy_dsl.py) — NO eval() calls.
