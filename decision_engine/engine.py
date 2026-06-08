@@ -171,6 +171,8 @@ class DecisionRequest:
         Number of open credit accounts.
     annual_income:
         Gross annual income in USD (optional; used only for loan_terms metadata).
+    ocr_confidence:
+        OCR confidence score from document ingestion (optional; float 0.0-1.0).
     """
 
     application_id: str
@@ -182,6 +184,7 @@ class DecisionRequest:
     debt_to_income_ratio: float
     num_open_accounts: int
     annual_income: Optional[float] = None
+    ocr_confidence: Optional[float] = None
 
 
 @dataclass
@@ -261,6 +264,7 @@ def _collect_reason_codes(
     credit_result: CreditResult,
     debt_to_income_ratio: float,
     num_open_accounts: int,
+    ocr_confidence: Optional[float] = None,
 ) -> List[str]:
     """Collect applicable FCRA adverse action codes.
 
@@ -276,6 +280,8 @@ def _collect_reason_codes(
         Model outputs.
     debt_to_income_ratio, num_open_accounts:
         Raw application fields used for supplemental codes.
+    ocr_confidence:
+        OCR confidence score.
 
     Returns
     -------
@@ -291,6 +297,8 @@ def _collect_reason_codes(
     if fraud_result.fraud_flag == "reject":
         codes.append("AA02")
     elif fraud_result.fraud_flag == "manual_review":
+        codes.append("AA05")
+    elif ocr_confidence is not None and ocr_confidence < 0.85 and decision == DECISION_MANUAL_REVIEW:
         codes.append("AA05")
     elif credit_result.pd_score > PD_THRESHOLD_MEDIUM:
         codes.append("AA01")
@@ -498,6 +506,12 @@ def make_decision(
         if _early_conditions:
             decision = DECISION_CONDITIONAL
 
+    # Apply OCR confidence check to override approvals/conditional approvals
+    ocr_conf = getattr(request, "ocr_confidence", None)
+    if ocr_conf is not None and ocr_conf < 0.85:
+        if decision in (DECISION_APPROVE, DECISION_CONDITIONAL):
+            decision = DECISION_MANUAL_REVIEW
+
     # ------------------------------------------------------------------
     # Step 2 — Build loan terms (only meaningful for APPROVE)
     # ------------------------------------------------------------------
@@ -527,6 +541,7 @@ def make_decision(
         credit_result=credit,
         debt_to_income_ratio=request.debt_to_income_ratio,
         num_open_accounts=request.num_open_accounts,
+        ocr_confidence=ocr_conf,
     )
 
     # ------------------------------------------------------------------
