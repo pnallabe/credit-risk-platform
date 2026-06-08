@@ -60,7 +60,6 @@ README*
 
 # Audit / compliance logs (not needed in containers)
 # NOTE: audit/ is required by decision-api, do NOT exclude it
-compliance/
 
 # Docker files themselves
 Dockerfile*

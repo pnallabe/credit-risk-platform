@@ -4,29 +4,180 @@
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
+    --background: 240 10% 3.9%; /* #09090b - Zinc 950 */
+    --foreground: 0 0% 98%;      /* #fafafa */
+    --card: 240 10% 5.9%;        /* #18181b - Zinc 900 */
+    --card-foreground: 0 0% 98%;
+    --popover: 240 10% 3.9%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 221.2 83.2% 53.3%; /* Cobalt Blue #3366f4 */
     --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
+    --secondary: 240 3.7% 15.9%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 240 3.7% 15.9%;
+    --muted-foreground: 240 5% 64.9%;
+    --accent: 240 3.7% 15.9%;
+    --accent-foreground: 0 0% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 240 3.7% 15.9%;    /* #27272a - Zinc 800 */
+    --input: 240 3.7% 15.9%;
     --ring: 221.2 83.2% 53.3%;
-    --radius: 0.5rem;
+    --radius: 0.75rem;
     --sidebar-width: 256px;
   }
 }
 
 @layer base {
-  * { @apply border-border; }
-  body { @apply bg-background text-foreground; }
+  * {
+    @apply border-border;
+    box-sizing: border-box;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    background-color: #09090b !important;
+    color: #fafafa !important;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   AgentHive Visual Theme Overrides (Mapping Light Utility Classes to Dark Style)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Layout & Panel Backgrounds */
+.bg-gray-50, .bg-slate-50 {
+  background-color: #09090b !important;
+}
+
+.bg-white, [class*="bg-white"] {
+  background-color: #18181b !important;
+}
+
+/* Borders */
+.border-gray-50,
+.border-gray-100,
+.border-gray-200,
+.border-gray-300,
+.border-slate-100,
+.border-slate-200,
+.border-border,
+.border-b,
+.border-r,
+.border-t,
+.border-l,
+.divide-gray-50 > *,
+.divide-gray-100 > * {
+  border-color: #27272a !important;
+}
+
+/* Text Colors */
+.text-gray-900, .text-slate-900 {
+  color: #fafafa !important;
+}
+
+.text-gray-800, .text-slate-800 {
+  color: #f4f4f5 !important;
+}
+
+.text-gray-700, .text-slate-700 {
+  color: #e4e4e7 !important;
+}
+
+.text-gray-600, .text-slate-600 {
+  color: #cbd5e1 !important;
+}
+
+.text-gray-500, .text-slate-500 {
+  color: #a1a1aa !important;
+}
+
+.text-gray-400, .text-slate-400 {
+  color: #71717a !important;
+}
+
+/* Hover & Interactive States */
+.hover\:bg-gray-50:hover,
+.hover\:bg-slate-50:hover,
+.hover\:bg-gray-100:hover,
+.hover\:bg-slate-100:hover {
+  background-color: #27272a !important;
+}
+
+/* Table specific styling */
+thead, .bg-gray-50 {
+  background-color: #0c0c0e !important;
+}
+
+/* Input Fields & Selection Dropdowns */
+select, input, textarea {
+  background-color: #18181b !important;
+  color: #fafafa !important;
+  border-color: #27272a !important;
+}
+
+select option {
+  background-color: #18181b !important;
+  color: #fafafa !important;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Premium Design Extras (Animations, Glows & Chart styling)
+   ───────────────────────────────────────────────────────────────────────────── */
+
+/* Premium dark scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #09090b;
+}
+::-webkit-scrollbar-thumb {
+  background: #27272a;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3f3f46;
+}
+
+/* SVG Chart Line Adjustments */
+.recharts-cartesian-grid-horizontal line,
+.recharts-cartesian-grid-vertical line {
+  stroke: #27272a !important;
+  stroke-dasharray: 4 4;
+}
+
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background-color: #18181b !important;
+  border: 1px solid #27272a !important;
+  border-radius: 0.5rem !important;
+  color: #fafafa !important;
+}
+
+/* Micro-interaction Hover Highlight Effect */
+.card-hover-effect {
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.card-hover-effect:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 20px -10px rgba(51, 102, 244, 0.15);
+  border-color: rgba(51, 102, 244, 0.3) !important;
+}
+
+/* Background Radial Glow Indicator */
+.radial-glow-bg {
+  position: relative;
+  overflow: hidden;
+}
+.radial-glow-bg::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: radial-gradient(ellipse at top, rgba(51, 102, 244, 0.08), transparent);
+  pointer-events: none;
+  z-index: 0;
 }

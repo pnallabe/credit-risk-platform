@@ -29,6 +29,7 @@ import {
   X,
   Check,
   Clock,
+  Settings,
 } from "lucide-react";
 import type { UserRole } from "@/auth";
 import { cn } from "@/lib/utils";
@@ -74,6 +75,11 @@ const ROLE_NAV: Record<UserRole, NavItem[]> = {
     { label: "Executive Overview", href: "/executive", icon: <TrendingUp className="w-4 h-4" /> },
     { label: "AI Assistant", href: "/agent", icon: <Bot className="w-4 h-4" /> },
   ],
+  regulator: [
+    { label: "Exam Packets", href: "/regulator/exam-packets", icon: <FolderOpen className="w-4 h-4" /> },
+    { label: "Audit Records", href: "/regulator/audit-records", icon: <Search className="w-4 h-4" /> },
+    { label: "AI Assistant", href: "/agent", icon: <Bot className="w-4 h-4" /> },
+  ],
 };
 
 const ROLE_LABELS: Record<UserRole, string> = {
@@ -82,14 +88,16 @@ const ROLE_LABELS: Record<UserRole, string> = {
   compliance: "Compliance",
   data_scientist: "Data Scientist",
   executive: "Executive",
+  regulator: "Regulator",
 };
 
 const ROLE_COLORS: Record<UserRole, string> = {
-  underwriter: "bg-blue-100 text-blue-800",
-  risk_analyst: "bg-purple-100 text-purple-800",
-  compliance: "bg-red-100 text-red-800",
-  data_scientist: "bg-green-100 text-green-800",
-  executive: "bg-amber-100 text-amber-800",
+  underwriter: "bg-brand-500/10 text-brand-400 border border-brand-500/20",
+  risk_analyst: "bg-violet-500/10 text-violet-400 border border-violet-500/20",
+  compliance: "bg-rose-500/10 text-rose-400 border border-rose-500/20",
+  data_scientist: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+  executive: "bg-amber-500/10 text-amber-400 border border-amber-500/20",
+  regulator: "bg-zinc-500/10 text-zinc-400 border border-zinc-500/20",
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -119,11 +127,11 @@ export function DashboardShell({
   const pageName = navItems.find((n) => pathname.startsWith(n.href))?.label ?? "Dashboard";
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex h-screen bg-[#09090b] text-[#fafafa] overflow-hidden font-sans">
       {/* ── Mobile nav overlay ── */}
       {mobileNavOpen && (
         <div
-          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
           onClick={() => setMobileNavOpen(false)}
           aria-hidden="true"
         />
@@ -135,29 +143,31 @@ export function DashboardShell({
         role="navigation"
         aria-label="Mobile navigation"
         className={cn(
-          "fixed inset-y-0 left-0 z-50 w-72 bg-white flex flex-col md:hidden transition-transform duration-200 shadow-xl",
+          "fixed inset-y-0 left-0 z-50 w-72 bg-[#0c0c0e] border-r border-[#27272a] flex flex-col md:hidden transition-transform duration-200 shadow-2xl",
           mobileNavOpen ? "translate-x-0" : "-translate-x-full"
         )}
       >
-        <div className="h-16 flex items-center px-4 border-b gap-3">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
-            LS
-          </div>
-          <span className="font-bold text-gray-900 text-sm">LendSmart Analytics</span>
+        <div className="h-16 flex items-center px-4 border-b border-[#27272a] gap-3">
+          <svg width="24" height="24" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="text-brand-500">
+            <path d="M14 2L24.7 8V20L14 26L3.3 20V8L14 2Z" fill="currentColor"></path>
+            <path d="M14 8L19.2 11V17L14 20L8.8 17V11L14 8Z" fill="none" stroke="white" strokeWidth="1.2" strokeOpacity="0.9"></path>
+            <circle cx="14" cy="14" r="1.5" fill="white" fillOpacity="0.9"></circle>
+          </svg>
+          <span className="font-bold text-[#fafafa] text-sm tracking-tight">AgentHive Analytics</span>
           <button
             onClick={() => setMobileNavOpen(false)}
-            className="ml-auto text-gray-400 hover:text-gray-600"
+            className="ml-auto text-zinc-400 hover:text-zinc-200"
             aria-label="Close navigation"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="px-4 py-3 border-b">
+        <div className="px-4 py-3 border-b border-[#27272a]">
           <span className={cn("text-xs font-semibold px-2 py-1 rounded-full", ROLE_COLORS[role])}>
             {ROLE_LABELS[role]}
           </span>
         </div>
-        <nav className="flex-1 py-4 overflow-y-auto">
+        <nav className="flex-1 py-4 overflow-y-auto space-y-1">
           {navItems.map((item) => {
             const active = pathname.startsWith(item.href);
             return (
@@ -166,10 +176,10 @@ export function DashboardShell({
                 href={item.href}
                 onClick={() => setMobileNavOpen(false)}
                 className={cn(
-                  "flex items-center gap-3 px-4 py-2.5 text-sm transition-colors mx-2 rounded-lg",
+                  "flex items-center gap-3 px-4 py-2.5 text-sm transition-all mx-2 rounded-lg",
                   active
-                    ? "bg-blue-50 text-blue-700 font-medium"
-                    : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                    ? "bg-brand-500/10 text-brand-400 font-semibold border-l-2 border-brand-500"
+                    : "text-zinc-400 hover:bg-zinc-800/50 hover:text-[#fafafa]"
                 )}
               >
                 <span className="flex-shrink-0">{item.icon}</span>
@@ -178,16 +188,16 @@ export function DashboardShell({
             );
           })}
         </nav>
-        <div className="px-4 py-4 border-t">
+        <div className="px-4 py-4 border-t border-[#27272a]">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 font-bold text-xs flex-shrink-0">
+            <div className="w-8 h-8 bg-brand-500/10 text-brand-400 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0">
               {userName.slice(0, 2).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold text-gray-800 truncate">{userName}</p>
-              <p className="text-xs text-gray-400">{ROLE_LABELS[role]}</p>
+              <p className="text-xs font-semibold text-zinc-200 truncate">{userName}</p>
+              <p className="text-xs text-zinc-500">{ROLE_LABELS[role]}</p>
             </div>
-            <a href="/auth/signout" className="text-gray-400 hover:text-red-500" aria-label="Sign out">
+            <a href="/auth/signout" className="text-zinc-400 hover:text-rose-400" aria-label="Sign out">
               <LogOut className="w-3.5 h-3.5" />
             </a>
           </div>
@@ -197,21 +207,25 @@ export function DashboardShell({
       {/* ── Desktop Sidebar ── */}
       <aside
         className={cn(
-          "hidden md:flex flex-col bg-white border-r transition-all duration-200 flex-shrink-0",
+          "hidden md:flex flex-col bg-[#0c0c0e] border-r border-[#27272a] transition-all duration-200 flex-shrink-0 relative radial-glow-bg",
           sidebarOpen ? "w-64" : "w-16"
         )}
       >
         {/* Logo */}
-        <div className="h-16 flex items-center px-4 border-b gap-3">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
-            LS
-          </div>
+        <div className="h-16 flex items-center px-4 border-b border-[#27272a] gap-3">
+          <svg width="24" height="24" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" className="text-brand-500 flex-shrink-0">
+            <path d="M14 2L24.7 8V20L14 26L3.3 20V8L14 2Z" fill="currentColor"></path>
+            <path d="M14 8L19.2 11V17L14 20L8.8 17V11L14 8Z" fill="none" stroke="white" strokeWidth="1.2" strokeOpacity="0.9"></path>
+            <circle cx="14" cy="14" r="1.5" fill="white" fillOpacity="0.9"></circle>
+          </svg>
           {sidebarOpen && (
-            <span className="font-bold text-gray-900 text-sm">LendSmart Analytics</span>
+            <span className="font-bold text-[#fafafa] text-sm tracking-tight bg-gradient-to-r from-white via-zinc-100 to-zinc-300 bg-clip-text text-transparent">
+              AgentHive Analytics
+            </span>
           )}
           <button
             onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="ml-auto text-gray-400 hover:text-gray-600"
+            className="ml-auto text-zinc-400 hover:text-zinc-200 p-1 rounded-md hover:bg-zinc-800/40"
             aria-label={sidebarOpen ? "Collapse sidebar" : "Expand sidebar"}
           >
             {sidebarOpen ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -220,7 +234,7 @@ export function DashboardShell({
 
         {/* Role badge */}
         {sidebarOpen && (
-          <div className="px-4 py-3 border-b">
+          <div className="px-4 py-3 border-b border-[#27272a]">
             <span className={cn("text-xs font-semibold px-2 py-1 rounded-full", ROLE_COLORS[role])}>
               {ROLE_LABELS[role]}
             </span>
@@ -228,7 +242,7 @@ export function DashboardShell({
         )}
 
         {/* Nav items */}
-        <nav className="flex-1 py-4 overflow-y-auto">
+        <nav className="flex-1 py-4 overflow-y-auto space-y-1">
           {navItems.map((item) => {
             const active = pathname.startsWith(item.href);
             return (
@@ -236,10 +250,10 @@ export function DashboardShell({
                 key={item.href}
                 href={item.href}
                 className={cn(
-                  "flex items-center gap-3 px-4 py-2.5 text-sm transition-colors mx-2 rounded-lg",
+                  "flex items-center gap-3 px-4 py-2.5 text-sm transition-all mx-2 rounded-lg",
                   active
-                    ? "bg-blue-50 text-blue-700 font-medium"
-                    : "text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+                    ? "bg-brand-500/10 text-brand-400 font-semibold border-l-2 border-brand-500"
+                    : "text-zinc-400 hover:bg-zinc-800/40 hover:text-[#fafafa]"
                 )}
                 title={!sidebarOpen ? item.label : undefined}
                 aria-label={!sidebarOpen ? item.label : undefined}
@@ -253,16 +267,16 @@ export function DashboardShell({
 
         {/* User footer */}
         {sidebarOpen && (
-          <div className="px-4 py-4 border-t">
+          <div className="px-4 py-4 border-t border-[#27272a]">
             <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 font-bold text-xs flex-shrink-0">
+              <div className="w-8 h-8 bg-brand-500/10 text-brand-400 rounded-full flex items-center justify-center font-bold text-xs flex-shrink-0">
                 {userName.slice(0, 2).toUpperCase()}
               </div>
               <div className="min-w-0 flex-1">
-                <p className="text-xs font-semibold text-gray-800 truncate">{userName}</p>
-                <p className="text-xs text-gray-400">{ROLE_LABELS[role]}</p>
+                <p className="text-xs font-semibold text-zinc-200 truncate">{userName}</p>
+                <p className="text-xs text-zinc-500">{ROLE_LABELS[role]}</p>
               </div>
-              <a href="/auth/signout" className="text-gray-400 hover:text-red-500" aria-label="Sign out">
+              <a href="/auth/signout" className="text-zinc-400 hover:text-rose-400" aria-label="Sign out">
                 <LogOut className="w-3.5 h-3.5" />
               </a>
             </div>
@@ -271,12 +285,15 @@ export function DashboardShell({
       </aside>
 
       {/* ── Main area ── */}
-      <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
+      <div className="flex flex-col flex-1 min-w-0 overflow-hidden relative">
+        {/* Decorative background glow circles */}
+        <div className="absolute top-0 right-1/4 w-96 h-96 bg-brand-500/5 rounded-full blur-3xl pointer-events-none z-0"></div>
+
         {/* Top bar */}
-        <header className="h-16 bg-white border-b flex items-center px-4 md:px-6 gap-4 flex-shrink-0">
+        <header className="h-16 bg-[#09090b]/80 backdrop-blur-md border-b border-[#27272a] flex items-center px-4 md:px-6 gap-4 flex-shrink-0 z-10">
           {/* Mobile hamburger */}
           <button
-            className="md:hidden p-2 -ml-1 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-50"
+            className="md:hidden p-2 -ml-1 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-zinc-800"
             onClick={() => setMobileNavOpen(true)}
             aria-label="Open navigation"
             aria-expanded={mobileNavOpen}
@@ -287,7 +304,7 @@ export function DashboardShell({
 
           {/* Breadcrumb */}
           <div className="flex-1 min-w-0">
-            <h1 className="text-sm font-semibold text-gray-900 truncate">{pageName}</h1>
+            <h1 className="text-sm font-semibold text-[#fafafa] tracking-tight truncate">{pageName}</h1>
           </div>
 
           {/* Date range selector */}
@@ -295,7 +312,7 @@ export function DashboardShell({
             <select
               value={dateRange}
               onChange={(e) => onDateRangeChange(e.target.value as "7d" | "30d" | "90d" | "custom")}
-              className="text-sm border border-gray-200 rounded-lg px-3 py-1.5 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="text-xs border border-[#27272a] rounded-lg px-3 py-1.5 bg-[#18181b] text-zinc-200 focus:outline-none focus:ring-2 focus:ring-brand-500"
             >
               <option value="7d">Last 7 days</option>
               <option value="30d">Last 30 days</option>
@@ -305,23 +322,23 @@ export function DashboardShell({
           )}
 
           {/* Notification bell */}
-          <button className="relative p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-50" aria-label="Notifications">
+          <button className="relative p-2 text-zinc-400 hover:text-zinc-200 rounded-lg hover:bg-zinc-800/40" aria-label="Notifications">
             <Bell className="w-4 h-4" />
             {notificationCount > 0 && (
-              <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+              <span className="absolute top-1.5 right-1.5 w-3.5 h-3.5 bg-rose-500 text-white text-[9px] rounded-full flex items-center justify-center animate-pulse">
                 {notificationCount}
               </span>
             )}
           </button>
 
-          {/* Dark mode toggle (placeholder) */}
-          <button className="p-2 text-gray-500 hover:text-gray-700 rounded-lg hover:bg-gray-50" aria-label="Toggle dark mode">
+          {/* Dark mode indicator (showing active) */}
+          <button className="p-2 text-brand-400 hover:text-brand-300 rounded-lg hover:bg-zinc-800/40" aria-label="Dark mode active">
             <Moon className="w-4 h-4" />
           </button>
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-6">{children}</main>
+        <main className="flex-1 overflow-y-auto p-6 z-10 relative">{children}</main>
       </div>
     </div>
   );
@@ -347,27 +364,27 @@ export function KpiCard({
   color?: "blue" | "green" | "red" | "amber" | "purple";
 }) {
   const colorMap = {
-    blue: "bg-blue-50 text-blue-700",
-    green: "bg-green-50 text-green-700",
-    red: "bg-red-50 text-red-700",
-    amber: "bg-amber-50 text-amber-700",
-    purple: "bg-purple-50 text-purple-700",
+    blue: "bg-brand-500/10 text-brand-400 border border-brand-500/20",
+    green: "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20",
+    red: "bg-rose-500/10 text-rose-400 border border-rose-500/20",
+    amber: "bg-amber-500/10 text-amber-400 border border-amber-500/20",
+    purple: "bg-violet-500/10 text-violet-400 border border-violet-500/20",
   };
   return (
-    <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-5">
+    <div className="bg-[#18181b] rounded-xl border border-[#27272a] p-5 card-hover-effect">
       <div className="flex items-center justify-between mb-3">
-        <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">{label}</span>
+        <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">{label}</span>
         {icon && (
-          <span className={cn("text-lg w-9 h-9 rounded-lg flex items-center justify-center", colorMap[color])}>
+          <span className={cn("text-base w-9 h-9 rounded-lg flex items-center justify-center", colorMap[color])}>
             {icon}
           </span>
         )}
       </div>
-      <p className="text-2xl font-black text-gray-900">{value}</p>
+      <p className="text-2xl font-black text-white tracking-tight">{value}</p>
       {trend !== undefined && (
-        <p className={cn("text-xs mt-1 font-medium", trend >= 0 ? "text-green-600" : "text-red-600")}>
+        <p className={cn("text-xs mt-1.5 font-semibold", trend >= 0 ? "text-emerald-400" : "text-rose-400")}>
           {trend >= 0 ? "↑" : "↓"} {Math.abs(trend).toFixed(1)}%{" "}
-          <span className="text-gray-400 font-normal">{trendLabel}</span>
+          <span className="text-zinc-500 font-normal">{trendLabel}</span>
         </p>
       )}
     </div>
@@ -380,17 +397,17 @@ export function KpiCard({
 
 export function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
-    stable: "bg-green-100 text-green-800",
-    minor: "bg-amber-100 text-amber-800",
-    major: "bg-red-100 text-red-800",
-    APPROVE: "bg-green-100 text-green-800",
-    REJECT: "bg-red-100 text-red-800",
-    MANUAL_REVIEW: "bg-amber-100 text-amber-800",
-    approved: "bg-green-100 text-green-800",
-    candidate: "bg-gray-100 text-gray-700",
-    deprecated: "bg-red-100 text-red-800",
-    PASS: "bg-green-100 text-green-700",
-    FAIL: "bg-red-100 text-red-700",
+    stable: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20",
+    minor: "bg-amber-500/15 text-amber-400 border border-amber-500/20",
+    major: "bg-rose-500/15 text-rose-400 border border-rose-500/20",
+    APPROVE: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20",
+    REJECT: "bg-rose-500/15 text-rose-400 border border-rose-500/20",
+    MANUAL_REVIEW: "bg-amber-500/15 text-amber-400 border border-amber-500/20",
+    approved: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20",
+    candidate: "bg-zinc-800 text-zinc-300 border border-zinc-700",
+    deprecated: "bg-rose-500/15 text-rose-400 border border-rose-500/20",
+    PASS: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20",
+    FAIL: "bg-rose-500/15 text-rose-400 border border-rose-500/20",
   };
   const iconMap: Record<string, React.ReactNode> = {
     APPROVE: <Check className="w-3 h-3" aria-hidden="true" />,
@@ -402,7 +419,7 @@ export function StatusBadge({ status }: { status: string }) {
   };
   const label = status.replace(/_/g, " ");
   return (
-    <span className={cn("inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold", map[status] ?? "bg-gray-100 text-gray-700")}>
+    <span className={cn("inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold", map[status] ?? "bg-zinc-800 text-zinc-300 border border-zinc-700")}>
       {iconMap[status]}
       {label}
     </span>
@@ -415,15 +432,15 @@ export function StatusBadge({ status }: { status: string }) {
 
 export function TrafficLight({ status }: { status: "stable" | "minor" | "major" }) {
   const config: Record<"stable" | "minor" | "major", { dot: string; label: string }> = {
-    stable: { dot: "bg-green-500", label: "Stable" },
-    minor: { dot: "bg-amber-400", label: "Caution" },
-    major: { dot: "bg-red-500", label: "Critical" },
+    stable: { dot: "bg-emerald-500 shadow-sm shadow-emerald-500/50", label: "Stable" },
+    minor: { dot: "bg-amber-500 shadow-sm shadow-amber-500/50", label: "Caution" },
+    major: { dot: "bg-rose-500 shadow-sm shadow-rose-500/50", label: "Critical" },
   };
   const { dot, label } = config[status];
   return (
-    <span className="inline-flex items-center gap-1.5" aria-label={label}>
-      <span className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${dot}`} aria-hidden="true" />
-      <span className="text-xs font-medium text-gray-600">{label}</span>
+    <span className="inline-flex items-center gap-2" aria-label={label}>
+      <span className={`w-2 h-2 rounded-full flex-shrink-0 ${dot}`} aria-hidden="true" />
+      <span className="text-xs font-semibold text-zinc-300">{label}</span>
     </span>
   );
 }
