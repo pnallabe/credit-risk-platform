@@ -108,6 +108,7 @@ export function DashboardShell({
   children,
   role,
   userName,
+  tenantName = "AgentHive",
   dateRange,
   onDateRangeChange,
   notificationCount = 0,
@@ -115,6 +116,7 @@ export function DashboardShell({
   children: React.ReactNode;
   role: UserRole;
   userName: string;
+  tenantName?: string;
   dateRange?: "7d" | "30d" | "90d" | "custom";
   onDateRangeChange?: (v: "7d" | "30d" | "90d" | "custom") => void;
   notificationCount?: number;
@@ -153,7 +155,7 @@ export function DashboardShell({
             <path d="M14 8L19.2 11V17L14 20L8.8 17V11L14 8Z" fill="none" stroke="white" strokeWidth="1.2" strokeOpacity="0.9"></path>
             <circle cx="14" cy="14" r="1.5" fill="white" fillOpacity="0.9"></circle>
           </svg>
-          <span className="font-bold text-[#fafafa] text-sm tracking-tight">AgentHive Analytics</span>
+          <span className="font-bold text-[#fafafa] text-sm tracking-tight">{tenantName} Analytics</span>
           <button
             onClick={() => setMobileNavOpen(false)}
             className="ml-auto text-zinc-400 hover:text-zinc-200"
@@ -220,7 +222,7 @@ export function DashboardShell({
           </svg>
           {sidebarOpen && (
             <span className="font-bold text-[#fafafa] text-sm tracking-tight bg-gradient-to-r from-white via-zinc-100 to-zinc-300 bg-clip-text text-transparent">
-              AgentHive Analytics
+              {tenantName} Analytics
             </span>
           )}
           <button
