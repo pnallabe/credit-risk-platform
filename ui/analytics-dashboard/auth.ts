@@ -23,6 +23,7 @@ const DEMO_USERS: Record<string, { password: string; role: UserRole; name: strin
 };
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
+  trustHost: true,
   providers: [
     Credentials({
       name: "Email & Password",
