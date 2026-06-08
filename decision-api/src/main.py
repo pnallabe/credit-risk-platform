@@ -292,6 +292,114 @@ _BATCH_JOB_STORE = _BatchJobStore(
 )
 
 
+def _get_redis_client():
+    """Lazily load the Redis client from rate_limit middleware."""
+    try:
+        from middleware.rate_limit import _get_redis
+        return _get_redis()
+    except Exception:
+        return None
+
+
+def _validate_cache_key(key: str, tenant_id: str) -> None:
+    """Validate that the cache key is prefixed with the active tenant_id.
+
+    This ensures multi-tenant cache isolation and prevents cache pollution/leakage.
+    """
+    parts = key.split(":")
+    if len(parts) >= 3:
+        # Key format: cache:features:{tenant_id}:{application_id}
+        # or cache:shap:{tenant_id}:{features_hash}
+        if parts[2] != tenant_id:
+            raise ValueError(f"Cache key tenant mismatch: key has '{parts[2]}', but active tenant is '{tenant_id}'")
+    else:
+        raise ValueError(f"Invalid cache key format: {key}")
+
+
+import hashlib as _hashlib
+import json as _json_lib
+
+def _get_features_hash(features_df: pd.DataFrame, feature_list: List[str]) -> str:
+    row_dict = features_df[feature_list].iloc[0].to_dict()
+    # Serialize sorted keys for deterministic hashing
+    serialized = _json_lib.dumps(row_dict, sort_keys=True)
+    return _hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+async def _get_cached_features(tenant_id: str, application_id: str) -> Optional[pd.DataFrame]:
+    redis = _get_redis_client()
+    if not redis:
+        return None
+    key = f"cache:features:{tenant_id}:{application_id}"
+    try:
+        _validate_cache_key(key, tenant_id)
+        val = await redis.get(key)
+        if val:
+            records = _json_lib.loads(val)
+            return pd.DataFrame(records)
+    except Exception as exc:
+        logger.warning("Failed to retrieve cached features: %s", exc)
+    return None
+
+
+async def _set_cached_features(tenant_id: str, application_id: str, df: pd.DataFrame) -> None:
+    redis = _get_redis_client()
+    if not redis:
+        return
+    key = f"cache:features:{tenant_id}:{application_id}"
+    try:
+        _validate_cache_key(key, tenant_id)
+        records = df.to_dict(orient="records")
+        val = _json_lib.dumps(records)
+        await redis.set(key, val, ex=3600)  # cache for 1 hour
+    except Exception as exc:
+        logger.warning("Failed to cache features: %s", exc)
+
+
+async def _get_cached_shap(tenant_id: str, features_hash: str) -> Optional[Any]:
+    redis = _get_redis_client()
+    if not redis:
+        return None
+    key = f"cache:shap:{tenant_id}:{features_hash}"
+    try:
+        _validate_cache_key(key, tenant_id)
+        val = await redis.get(key)
+        if val:
+            data = _json_lib.loads(val)
+            from explainability.shap_explainer import ExplanationResult
+            return ExplanationResult(
+                top_positive_factors=data["top_positive_factors"],
+                top_negative_factors=data["top_negative_factors"],
+                base_value=data["base_value"],
+                predicted_value=data["predicted_value"],
+                explanation_text=data["explanation_text"],
+                feature_names=data["feature_names"],
+            )
+    except Exception as exc:
+        logger.warning("Failed to retrieve cached SHAP: %s", exc)
+    return None
+
+
+async def _set_cached_shap(tenant_id: str, features_hash: str, result: Any) -> None:
+    redis = _get_redis_client()
+    if not redis:
+        return
+    key = f"cache:shap:{tenant_id}:{features_hash}"
+    try:
+        _validate_cache_key(key, tenant_id)
+        data = {
+            "top_positive_factors": result.top_positive_factors,
+            "top_negative_factors": result.top_negative_factors,
+            "base_value": result.base_value,
+            "predicted_value": result.predicted_value,
+            "explanation_text": result.explanation_text,
+            "feature_names": result.feature_names,
+        }
+        await redis.set(key, _json_lib.dumps(data), ex=3600)  # cache for 1 hour
+    except Exception as exc:
+        logger.warning("Failed to cache SHAP: %s", exc)
+
+
 def _load_models() -> None:
     """Load both models at startup.  Raises RuntimeError if either fails.
 
@@ -574,6 +682,12 @@ class LoanApplicationRequest(BaseModel):
         pattern="^[A-Z]{2}$",
         description="ISO 3166-2 two-letter US state code used for APR cap enforcement.",
     )
+    ocr_confidence: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="OCR confidence score from document ingestion.",
+    )
 
 
 class ExplanationFactor(BaseModel):
@@ -676,7 +790,10 @@ async def _run_pipeline(
         _policy_version_tag = _policy_cfg.version_tag
 
     # 1. Build features
-    features_df = _build_feature_df(app_req)
+    features_df = await _get_cached_features(tenant_id, app_req.application_id)
+    if features_df is None:
+        features_df = _build_feature_df(app_req)
+        await _set_cached_features(tenant_id, app_req.application_id, features_df)
 
     # GAP-18: Live bureau pull at origination time.
     # Controlled by BUREAU_ENABLED env var (default: false) so CI/CD is never
@@ -775,6 +892,7 @@ async def _run_pipeline(
         debt_to_income_ratio=float(app_req.debt_to_income_ratio),
         num_open_accounts=app_req.num_open_accounts,
         annual_income=float(app_req.annual_income),
+        ocr_confidence=app_req.ocr_confidence,
     )
     # Merge tenant cutoffs into the engine call when supported
     decision_result = make_decision(decision_req, policy_overrides=policy_cutoffs or None)
@@ -785,12 +903,16 @@ async def _run_pipeline(
     try:
         from explainability.shap_explainer import explain_prediction
         decision_label = decision_result.decision.lower()
-        shap_result = explain_prediction(
-            _risk_model if _risk_model is not None else _fraud_model,
-            features_df[FEATURE_CONFIG.feature_list],
-            decision_label=decision_label,
-            top_n=3,
-        )
+        features_hash = _get_features_hash(features_df, FEATURE_CONFIG.feature_list)
+        shap_result = await _get_cached_shap(tenant_id, features_hash)
+        if shap_result is None:
+            shap_result = explain_prediction(
+                _risk_model if _risk_model is not None else _fraud_model,
+                features_df[FEATURE_CONFIG.feature_list],
+                decision_label=decision_label,
+                top_n=3,
+            )
+            await _set_cached_shap(tenant_id, features_hash, shap_result)
         for f in shap_result.top_positive_factors[:2] + shap_result.top_negative_factors[:1]:
             explanation_factors.append(
                 ExplanationFactor(

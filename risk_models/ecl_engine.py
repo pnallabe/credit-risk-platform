@@ -202,9 +202,13 @@ def compute_scenario_weighted_ecl(
     weighted = 0.0
 
     for s in scenarios:
+        credit_limit_s = float(record.credit_limit)
+        if s.name == "severely_adverse":
+            credit_limit_s *= 0.8
         scaled = ExposureRecord(
             **{
                 **record.__dict__,
+                "credit_limit": credit_limit_s,
                 "pd_12m": float(record.pd_12m) * float(s.pd_multiplier),
                 "lgd": float(record.lgd) * float(s.lgd_multiplier),
             }
@@ -290,11 +294,18 @@ def compute_portfolio_ecl(
         pd_s = base_pd * float(s.pd_multiplier)
         lgd_s = base_lgd * float(s.lgd_multiplier)
 
-        ecl_12m_s = pd_s * lgd_s * ead_arr
+        if s.name == "severely_adverse":
+            limit_s = limit * 0.8
+            undrawn_s = (limit_s - outstanding).clip(lower=0.0)
+            ead_s = (outstanding + ccf * undrawn_s).to_numpy(dtype=float)
+        else:
+            ead_s = ead_arr
+
+        ecl_12m_s = pd_s * lgd_s * ead_s
         ecl_life_s = _lifetime_ecl_vectorized(
             pd_12m=pd_s,
             lgd=lgd_s,
-            ead=ead_arr,
+            ead=ead_s,
             remaining_months=remaining_arr,
             discount_rate=float(discount_rate),
         )
