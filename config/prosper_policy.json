@@ -1,0 +1,33 @@
+{
+  "policy_id": "PR_POL_001",
+  "policy_type": "underwriting_policy",
+  "version": "1.0",
+  "effective_date": "2024-01-01",
+  "tenant_id": "prosper",
+  "underwriting_rules": {
+    "min_credit_score": 640,
+    "max_dti": 0.48,
+    "min_annual_income": 30000,
+    "max_ltv": 0.90,
+    "acceptable_loan_purposes": ["debt_consolidation", "home_improvement", "business", "personal", "auto", "other"],
+    "max_concentration_single_applicant": 0.05,
+    "max_concentration_single_purpose": 0.35
+  },
+  "pricing_rules": {
+    "base_rate_methodology": "WACC + credit_spread + operational_cost",
+    "WACC": 0.075,
+    "operational_cost_bps": 180,
+    "credit_spread_by_grade": {
+      "A": 220,
+      "B": 380,
+      "C": 600,
+      "D": 900,
+      "E": 1300
+    }
+  },
+  "risk_appetite": {
+    "max_portfolio_default_rate": 0.09,
+    "target_roa": 0.08,
+    "max_single_loan_loss_given_default": 0.55
+  }
+}
