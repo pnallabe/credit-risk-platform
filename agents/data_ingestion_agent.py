@@ -164,6 +164,7 @@ class DataIngestionAgent(BaseAgent):
         except ValidationError as exc:
             return ValidatedRecord(
                 application_id=raw.get("application_id", "UNKNOWN"),
+                tenant_id=self._tenant_id,
                 raw_features=raw,
                 validation_passed=False,
                 validation_errors=[str(exc)],

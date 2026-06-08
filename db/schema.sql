@@ -10,6 +10,7 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 --    Mirrors the LoanApplication Pydantic model in ingestion-api/src/models.py
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS loan_applications (
+    tenant_id               VARCHAR(50)     NOT NULL,
     application_id          UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id             UUID            NOT NULL,
     account_id              UUID,
@@ -61,6 +62,7 @@ CREATE INDEX IF NOT EXISTS idx_loan_apps_applied_at  ON loan_applications (appli
 --    so that different historical snapshots for the same application co-exist.
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS features (
+    tenant_id               VARCHAR(50)     NOT NULL,
     id                          BIGSERIAL       PRIMARY KEY,
     application_id              UUID            NOT NULL REFERENCES loan_applications(application_id) ON DELETE CASCADE,
     feature_set_version         VARCHAR(50)     NOT NULL,
@@ -94,6 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_features_computed_at    ON features (computed_at)
 --     feature_hash = sha256(sorted JSON of all feature values for that row).
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS feature_read_audit (
+    tenant_id               VARCHAR(50)     NOT NULL,
     id                   BIGSERIAL    PRIMARY KEY,
     application_id       TEXT         NOT NULL,
     feature_set_version  VARCHAR(50)  NOT NULL,
@@ -112,6 +115,7 @@ CREATE INDEX IF NOT EXISTS idx_feat_audit_read   ON feature_read_audit (read_at)
 --    One row per model inference run
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS model_predictions (
+    tenant_id               VARCHAR(50)     NOT NULL,
     prediction_id   UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
     application_id  UUID            NOT NULL REFERENCES loan_applications(application_id) ON DELETE CASCADE,
     model_name      VARCHAR(100)    NOT NULL,
@@ -133,6 +137,7 @@ CREATE INDEX IF NOT EXISTS idx_predictions_predicted_at   ON model_predictions (
 --    Append-only decision audit trail (FCRA / ECOA compliance)
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS audit_log (
+    tenant_id               VARCHAR(50)     NOT NULL,
     log_id                  UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
     application_id          UUID            NOT NULL REFERENCES loan_applications(application_id) ON DELETE RESTRICT,
     logged_at               TIMESTAMPTZ     NOT NULL DEFAULT now(),
@@ -162,6 +167,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_model_version  ON audit_log (model_version)
 --    Governance / lineage table for all model versions
 -- =============================================================================
 CREATE TABLE IF NOT EXISTS model_registry (
+    tenant_id               VARCHAR(50)     NOT NULL,
     model_id            UUID            PRIMARY KEY DEFAULT gen_random_uuid(),
     model_name          VARCHAR(100)    NOT NULL,
     model_version       VARCHAR(50)     NOT NULL,
@@ -178,3 +184,80 @@ CREATE TABLE IF NOT EXISTS model_registry (
 CREATE INDEX IF NOT EXISTS idx_model_registry_name    ON model_registry (model_name);
 CREATE INDEX IF NOT EXISTS idx_model_registry_status  ON model_registry (status);
 CREATE INDEX IF NOT EXISTS idx_model_registry_created ON model_registry (created_at);
+
+-- =============================================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES
+-- =============================================================================
+
+
+ALTER TABLE loan_applications ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY loan_applications_isolation_policy ON loan_applications
+    FOR ALL
+    USING (tenant_id = current_setting('rls.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('rls.tenant_id', true));
+
+CREATE POLICY loan_applications_admin_bypass ON loan_applications
+    FOR ALL
+    USING (current_setting('rls.tenant_id', true) = 'admin_override')
+    WITH CHECK (current_setting('rls.tenant_id', true) = 'admin_override');
+
+ALTER TABLE features ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY features_isolation_policy ON features
+    FOR ALL
+    USING (tenant_id = current_setting('rls.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('rls.tenant_id', true));
+
+CREATE POLICY features_admin_bypass ON features
+    FOR ALL
+    USING (current_setting('rls.tenant_id', true) = 'admin_override')
+    WITH CHECK (current_setting('rls.tenant_id', true) = 'admin_override');
+
+ALTER TABLE feature_read_audit ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY feature_read_audit_isolation_policy ON feature_read_audit
+    FOR ALL
+    USING (tenant_id = current_setting('rls.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('rls.tenant_id', true));
+
+CREATE POLICY feature_read_audit_admin_bypass ON feature_read_audit
+    FOR ALL
+    USING (current_setting('rls.tenant_id', true) = 'admin_override')
+    WITH CHECK (current_setting('rls.tenant_id', true) = 'admin_override');
+
+ALTER TABLE model_predictions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY model_predictions_isolation_policy ON model_predictions
+    FOR ALL
+    USING (tenant_id = current_setting('rls.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('rls.tenant_id', true));
+
+CREATE POLICY model_predictions_admin_bypass ON model_predictions
+    FOR ALL
+    USING (current_setting('rls.tenant_id', true) = 'admin_override')
+    WITH CHECK (current_setting('rls.tenant_id', true) = 'admin_override');
+
+ALTER TABLE audit_log ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY audit_log_isolation_policy ON audit_log
+    FOR ALL
+    USING (tenant_id = current_setting('rls.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('rls.tenant_id', true));
+
+CREATE POLICY audit_log_admin_bypass ON audit_log
+    FOR ALL
+    USING (current_setting('rls.tenant_id', true) = 'admin_override')
+    WITH CHECK (current_setting('rls.tenant_id', true) = 'admin_override');
+
+ALTER TABLE model_registry ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY model_registry_isolation_policy ON model_registry
+    FOR ALL
+    USING (tenant_id = current_setting('rls.tenant_id', true))
+    WITH CHECK (tenant_id = current_setting('rls.tenant_id', true));
+
+CREATE POLICY model_registry_admin_bypass ON model_registry
+    FOR ALL
+    USING (current_setting('rls.tenant_id', true) = 'admin_override')
+    WITH CHECK (current_setting('rls.tenant_id', true) = 'admin_override');
