@@ -462,5 +462,223 @@ Add missing high-risk tests, especially threshold boundaries and malformed input
 12. Prompt 13 + Full A/B/C/D/E audits for primary launch
 13. Prompt 14 + Guard-Rail C and E
 14. Prompt 15 + Guard-Rail C and E
+15. Prompt 16 + Guard-Rail D (Helix Decisions rebrand)
+16. Prompt 17 + Guard-Rail D and F (Tenant portal login wiring)
+17. Prompt 18 + Guard-Rail D and F (Tenant signup contact flow)
 
 This sequence prioritizes primary-product launch value while keeping integration and compliance risk low.
+
+---
+
+## Helix Decisions — Tenant Portal & Rebrand Prompts
+
+These prompts wire the Helix Decisions marketing frontend (previously AgentHiveHQ)
+to the credit-risk-platform multitenant backend and rebrand all user-facing surfaces.
+
+---
+
+## Prompt 16: Rebrand AgentHiveHQ to Helix Decisions
+
+```text
+Task:
+Rebrand all user-facing surfaces in the AgentHiveHQ Next.js frontend from
+"AgentHiveHQ" to "Helix Decisions".
+
+Context:
+- The marketing site and tenant portal frontend live in AgentHiveHQ/AgentHiveHQ/src/.
+- "Helix Decisions" is the new product brand name for the credit-risk platform frontend.
+- The hexagonal logomark SVG should be retained; only the wordmark text changes.
+
+Requirements:
+- Replace every occurrence of "AgentHiveHQ" (and casing variants: agentHiveHQ,
+  agent-hive, agenthivehq) with "Helix Decisions" / "helix-decisions" /
+  "helixdecisions" as context demands.
+- Update the Logo component (src/components/shared/Logo.tsx): change the wordmark
+  span text from "AgentHive" to "Helix Decisions".
+- Update footer copyright (src/components/layout/footer.tsx) to
+  "Helix Decisions, Inc."
+- Update meta title and metadataBase URL in src/app/layout.tsx to reflect the new
+  brand domain (helixdecisions.ai).
+- Update terms-of-service and privacy-policy pages to reference
+  "Helix Decisions, Inc." and contact email hello@helixdecisions.ai.
+- Update about-section.tsx company description to:
+  "Helix Decisions is a frontier AI company building compliant, explainable credit
+  intelligence for modern lenders."
+- Update pricing-section.tsx and contact-section.tsx Calendly/demo booking URLs
+  to the new brand domain; if not yet configured, insert a TODO comment:
+  // TODO: replace with helixdecisions.ai Calendly link
+- Do NOT change internal code identifiers, env var names, or API routes — only
+  user-visible text and brand strings.
+
+Testing:
+- Lint pass: npm run lint (zero new errors).
+- Search repo for remaining "AgentHive" occurrences and document any intentional
+  exceptions in a code comment.
+- Visual smoke test: confirm Logo renders "Helix Decisions" wordmark.
+
+Deliverables:
+- List of all files changed
+- Before/after wordmark diff
+- Remaining intentional brand exceptions documented inline
+```
+
+---
+
+## Prompt 17: Tenant Portal Login — Connect Frontend to CRP Auth
+
+```text
+Task:
+Connect the Helix Decisions login page (src/app/login/page.tsx) to the
+credit-risk-platform multitenant authentication flow so tenants log in with
+their tenant-specific credentials and are routed to their scoped dashboard.
+
+Context:
+- credit-risk-platform exposes a REST API (decision-api) with tenant-scoped JWT
+  auth. Each tenant has a unique slug (e.g., "acme-lending").
+- src/lib/crp-routing.ts already contains redirectUserToCrp() and
+  sanitizeNextPath() helpers.
+- Firebase Auth is used for identity; the CRP backend validates Firebase ID tokens
+  and maps them to tenant memberships via GET /api/v1/tenants/me.
+- Post-login, the user must be routed to
+  {NEXT_PUBLIC_CRP_BASE_URL}/t/{tenantSlug}/dashboard.
+
+Requirements:
+- After a successful Firebase sign-in (email/password or Google) in login/page.tsx,
+  call redirectUserToCrp(user, nextPath) as currently wired.
+- In crp-routing.ts, ensure redirectUserToCrp fetches GET /api/v1/tenants/me from
+  NEXT_PUBLIC_API_URL with the Firebase ID token in the Authorization: Bearer header.
+- If the API returns a non-empty tenant membership list, extract the first tenant
+  where status === "active" (fall back to the first entry if no active flag) and
+  redirect to {NEXT_PUBLIC_CRP_BASE_URL}/t/{tenantSlug}/dashboard.
+- If the API returns an empty membership list or a 401/403, show an inline error:
+  "Your account is not linked to any tenant. Contact support@helixdecisions.ai."
+- If NEXT_PUBLIC_CRP_BASE_URL is not set, fall back to http://localhost:3005.
+- Preserve the sanitizeNextPath guard to block open-redirect on the ?next= param.
+- Add structured console.error logs for failures: { userId, endpoint, statusCode }.
+
+Backend sub-task (credit-risk-platform — decision-api):
+- Confirm GET /api/v1/tenants/me exists and returns
+  [{ tenantSlug, status, role }] for the authenticated Firebase UID.
+- If the endpoint does not exist, create it. Validate the Firebase ID token via
+  the Firebase Admin SDK and look up the tenant_members table by firebase_uid.
+- Return 200 with an empty array (not 404) when no memberships are found.
+
+Testing:
+- Unit test: redirectUserToCrp with mock returning one active tenant → correct
+  redirect URL.
+- Unit test: redirectUserToCrp with empty membership list → returns false.
+- Unit test: sanitizeNextPath open-redirect attack vectors remain blocked.
+- Integration test: log in with a seeded test-tenant user → assert redirect lands
+  on /t/test-tenant/dashboard.
+
+Deliverables:
+- Files changed (crp-routing.ts, login/page.tsx if touched, backend endpoint)
+- Tests added/updated
+- Risk notes: open-redirect mitigation, ID token exposure surface, cross-tenant
+  isolation check
+```
+
+---
+
+## Prompt 18: Tenant Signup — Contact & Interest Form (No Self-Serve)
+
+```text
+Task:
+Replace the self-serve Firebase account-creation flow in src/app/signup/page.tsx
+with a tenant interest / contact form that queues prospects for manual onboarding.
+Do NOT create Firebase accounts automatically on form submission.
+
+Context:
+- credit-risk-platform is a regulated, multitenant B2B SaaS. New tenants are
+  onboarded manually after a qualification review.
+- The current signup page calls createUserWithEmailAndPassword immediately, which
+  bypasses the tenant provisioning workflow.
+
+Requirements — Frontend (src/app/signup/page.tsx):
+- Remove createUserWithEmailAndPassword and all Google OAuth sign-up calls.
+- Replace the form with a Tenant Interest Form with these fields:
+    • Full name (required)
+    • Work email (required, validated)
+    • Company name (required)
+    • Job title (optional)
+    • Use case (required, textarea ≤ 500 chars) — label:
+      "Describe your lending product and how you plan to use Helix Decisions."
+    • Monthly application volume (optional, select:
+      <500 / 500–5 k / 5 k–50 k / 50 k+)
+    • How did you hear about us? (optional, free text)
+- On submit, POST the form data to POST /api/v1/tenant-inquiries on
+  NEXT_PUBLIC_API_URL. If the request fails or the env var is absent, fall back
+  to opening a pre-filled mailto:hello@helixdecisions.ai link with subject
+  "Helix Decisions — Tenant Inquiry" and body containing the form values.
+- On successful submission, replace the form with a confirmation state (no page
+  redirect):
+    Headline: "Thanks — we'll be in touch."
+    Body: "Our team reviews every request and typically responds within
+           1 business day. In the meantime, you can book a demo below."
+    CTA button: "Book a Demo" → Calendly demo URL.
+- Add a note below the form:
+  "We do not offer self-serve signup. All tenants are onboarded by our team to
+   ensure compliance and a smooth integration."
+- Brand panel left copy: "Join lending teams making smarter, fairer credit
+  decisions with Helix Decisions."
+- Keep the "Already have an account? Sign in" link pointing to /login.
+
+Requirements — Backend (credit-risk-platform — new endpoint):
+- Add POST /api/v1/tenant-inquiries to ingestion-api (or a dedicated leads module).
+- Request schema (validated, all strings, trimmed):
+    { name, email, company, title?, useCase, volume?, referral? }
+- Persist to a new tenant_inquiries table (Postgres). This table must NOT have a
+  FK to the tenants table — it is a pre-provisioning staging record only.
+- Migration: add tenant_inquiries table with columns:
+    id (uuid PK), name, email, company, title, use_case, volume, referral,
+    created_at, ip_hash (sha256 of remote IP for rate-limit tracking).
+- On insert, fire an async notification: send email to INQUIRY_NOTIFY_EMAIL and/or
+  POST to INQUIRY_NOTIFY_SLACK_WEBHOOK (both optional env vars; skip if unset).
+- Rate-limit: reject with 429 if the same IP (hashed) submits more than 3 times
+  within a 1-hour rolling window.
+- Return 201 { id, message: "Inquiry received." } on success.
+- Return 422 { errors: { field: message } } on validation failure.
+- Do NOT expose raw IP addresses in logs or responses — store only sha256 hash.
+
+Testing:
+- Frontend unit: required-field validation (name, email, company, useCase).
+- Frontend unit: email format validation.
+- Frontend unit: textarea enforces 500-char max.
+- Frontend unit: successful POST → confirmation state renders, form hidden.
+- Frontend unit: POST failure (network error) → mailto fallback link shown.
+- Backend unit: POST /api/v1/tenant-inquiries happy path → 201, row inserted.
+- Backend unit: same IP submits 4th request in 1 hour → 429.
+- Backend unit: missing required field → 422 with field-level error map.
+- Backend unit: notification fires when INQUIRY_NOTIFY_EMAIL is set.
+
+Deliverables:
+- Files changed (signup/page.tsx, new backend endpoint, Alembic migration)
+- Tests added/updated
+- Risk notes: PII storage (email in DB), rate-limit bypass via proxy headers,
+  no Firebase account created on submission confirmed
+
+```
+
+---
+
+## Guard-Rail Prompt F: Tenant Isolation & Portal Security Audit
+
+```text
+Before shipping any tenant portal changes (Prompts 17–18), run this audit:
+
+1. Confirm every API endpoint in decision-api and ingestion-api that returns or
+   writes data validates the tenant_id claim from the JWT against the resource
+   being accessed. Cross-tenant data access must be impossible.
+2. Confirm the frontend never constructs a tenant slug from raw user-supplied URL
+   params without passing through canonicalizeTenantSlug().
+3. Confirm the ?next= redirect param is validated by sanitizeNextPath() before
+   every window.location or router.push call in the login flow.
+4. Confirm the tenant_inquiries table has no FK to the tenants table and that
+   submitting an inquiry grants zero system access until manual provisioning.
+5. Confirm no Firebase UID is trusted server-side without a corresponding
+   backend membership check against tenant_members.
+6. Confirm no raw IP addresses are stored or logged — only hashed values.
+
+Fail the audit and block the PR if any condition above is violated. Provide exact
+file and line references for each finding and a suggested remediation.
+```

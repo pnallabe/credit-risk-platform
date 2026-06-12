@@ -568,7 +568,7 @@ function Step3Review({
           {...register("consent_credit_check")}
         />
         <label htmlFor="consent" className="text-sm text-gray-700 leading-relaxed cursor-pointer">
-          I authorize LendSmart to obtain my credit report and verify my financial information for
+          I authorize Helix Decisions to obtain my credit report and verify my financial information for
           the purpose of evaluating this loan application. I understand this may result in a hard
           credit inquiry.
         </label>

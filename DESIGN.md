@@ -1,4 +1,4 @@
-# DESIGN.md — LendSmart Design System
+# DESIGN.md — Helix Decisions Design System
 
 > Source of truth for all UI design decisions across `ui/applicant-portal` and `ui/analytics-dashboard`.
 > Created by /plan-design-review on 2026-04-25. Branch: v1.5.0.

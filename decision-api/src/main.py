@@ -493,6 +493,17 @@ app.add_middleware(RateLimitMiddleware)
 # P1.1 — Idempotency (replay guard for POST /v1/decisions*)
 app.add_middleware(IdempotencyMiddleware)
 
+# Tenant auth router (Prompt 17)
+try:
+    from tenant_auth import router as tenant_router  # noqa: E402
+    app.include_router(tenant_router)
+except ImportError:
+    try:
+        from src.tenant_auth import router as tenant_router  # noqa: E402
+        app.include_router(tenant_router)
+    except ImportError:
+        pass
+
 
 @app.middleware("http")
 async def _metrics_middleware(request, call_next):

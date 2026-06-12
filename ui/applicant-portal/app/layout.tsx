@@ -10,7 +10,7 @@ const instrumentSerif = Instrument_Serif({
 });
 
 export const metadata: Metadata = {
-  title: "LendSmart — Fast, Transparent Loan Decisions",
+  title: "Helix Decisions — Fast, Transparent Loan Decisions",
   description:
     "Apply for a personal loan in minutes. Get a decision in seconds with clear, transparent terms.",
 };
@@ -27,20 +27,40 @@ export default function RootLayout({
           <header className="border-b bg-white sticky top-0 z-50">
             <div className="container mx-auto px-4 h-16 flex items-center justify-between">
               <a href="/" className="flex items-center gap-2 font-bold text-xl text-[#0f172a]">
+                {/* Helix Decisions double-helix logomark */}
                 <svg
-                  className="w-7 h-7"
+                  width="28"
+                  height="28"
+                  viewBox="0 0 28 28"
                   fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={2}
+                  xmlns="http://www.w3.org/2000/svg"
+                  aria-label="Helix Decisions"
                 >
+                  {/* Brand blue rounded background */}
+                  <rect width="28" height="28" rx="6" fill="#3366F4" />
+                  {/* Strand 1 — front */}
                   <path
+                    d="M 8,4 C 8,9 20,9 20,14 C 20,19 8,19 8,24"
+                    stroke="white"
+                    strokeWidth="2"
                     strokeLinecap="round"
-                    strokeLinejoin="round"
-                    d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
                   />
+                  {/* Strand 2 — back, reduced opacity */}
+                  <path
+                    d="M 20,4 C 20,9 8,9 8,14 C 8,19 20,19 20,24"
+                    stroke="white"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeOpacity="0.5"
+                  />
+                  {/* Rung — above first crossing */}
+                  <line x1="10" y1="7" x2="18" y2="7" stroke="white" strokeWidth="1.4" strokeLinecap="round" strokeOpacity="0.75" />
+                  {/* Rung — center */}
+                  <line x1="8" y1="14" x2="20" y2="14" stroke="white" strokeWidth="1.4" strokeLinecap="round" strokeOpacity="0.75" />
+                  {/* Rung — below second crossing */}
+                  <line x1="10" y1="21" x2="18" y2="21" stroke="white" strokeWidth="1.4" strokeLinecap="round" strokeOpacity="0.75" />
                 </svg>
-                LendSmart
+                Helix Decisions
               </a>
               <nav className="hidden md:flex items-center gap-6 text-sm">
                 <a href="/" className="text-gray-600 hover:text-gray-900 transition-colors">
@@ -61,9 +81,9 @@ export default function RootLayout({
           <main className="flex-1">{children}</main>
           <footer className="border-t bg-gray-50 py-8 mt-auto">
             <div className="container mx-auto px-4 text-center text-xs text-gray-500 space-y-2">
-              <p className="font-medium">LendSmart Financial Services</p>
+              <p className="font-medium">Helix Decisions Financial Services</p>
               <p>
-                LendSmart is not a bank. Loans are subject to credit approval. APR ranges from
+                Helix Decisions is not a bank. Loans are subject to credit approval. APR ranges from
                 5.0%–36.0%. Loan amounts from $1,000–$100,000. Terms from 12–60 months.
               </p>
               <p>
@@ -73,10 +93,10 @@ export default function RootLayout({
                 characteristics.
               </p>
               <p>
-                For adverse action inquiries, contact compliance@lendsmart.example.com or call
+                For adverse action inquiries, contact compliance@helixdecisions.ai or call
                 1-800-555-0100.
               </p>
-              <p className="mt-4">© {new Date().getFullYear()} LendSmart. All rights reserved.</p>
+              <p className="mt-4">© {new Date().getFullYear()} Helix Decisions, Inc. All rights reserved.</p>
             </div>
           </footer>
         </div>

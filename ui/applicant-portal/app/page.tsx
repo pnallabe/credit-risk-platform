@@ -113,7 +113,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      {/* ── Why LendSmart ── */}
+      {/* ── Why Helix Decisions ── */}
       {/* One job: build final-mile trust before the form */}
       <section className="py-20 bg-[#f1f5f9] px-4">
         <div className="container mx-auto max-w-4xl">
