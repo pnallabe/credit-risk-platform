@@ -12,8 +12,8 @@ export default async function ExecutivePage() {
   const userProps = {
     name: session.user.name ?? "Executive User",
     role: session.user.role ?? "executive",
-    tenantId: session.user.tenantId ?? "lendsmart",
-    tenantName: session.user.tenantName ?? "LendSmart",
+    tenantId: session.user.tenantId ?? "helixdecisions",
+    tenantName: session.user.tenantName ?? "Helix Decisions",
   };
 
   return <ExecutiveDashboardClient user={userProps} />;

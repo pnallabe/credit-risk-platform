@@ -41,9 +41,8 @@ export default async function SignInPage({
           </div>
           <h1 className="text-3xl font-black tracking-tight text-white">
             <span className="bg-gradient-to-r from-white via-indigo-200 to-indigo-400 bg-clip-text text-transparent">
-              LendSmart
-            </span>{" "}
-            <span className="text-indigo-400 font-semibold">Analytics</span>
+              Helix Decisions
+            </span>
           </h1>
           <p className="text-indigo-200/50 text-sm mt-2 font-medium">
             AI-Driven Credit Governance Portal
@@ -66,7 +65,7 @@ export default async function SignInPage({
               type="email"
               name="email"
               required
-              placeholder="you@lendsmart.example"
+              placeholder="you@helixdecisions.example"
               className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-indigo-300/30 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all"
             />
           </div>
@@ -97,19 +96,19 @@ export default async function SignInPage({
           <div className="grid grid-cols-2 gap-2 font-mono">
             <div>
               <p className="text-white font-medium">Underwriter</p>
-              <p className="text-[10px] text-indigo-300/50">underwriter@lendsmart.example</p>
+              <p className="text-[10px] text-indigo-300/50">underwriter@helixdecisions.example</p>
             </div>
             <div>
               <p className="text-white font-medium">Risk Analyst</p>
-              <p className="text-[10px] text-indigo-300/50">analyst@lendsmart.example</p>
+              <p className="text-[10px] text-indigo-300/50">analyst@helixdecisions.example</p>
             </div>
             <div>
               <p className="text-white font-medium">Compliance Officer</p>
-              <p className="text-[10px] text-indigo-300/50">compliance@lendsmart.example</p>
+              <p className="text-[10px] text-indigo-300/50">compliance@helixdecisions.example</p>
             </div>
             <div>
               <p className="text-white font-medium">Data Scientist</p>
-              <p className="text-[10px] text-indigo-300/50">scientist@lendsmart.example</p>
+              <p className="text-[10px] text-indigo-300/50">scientist@helixdecisions.example</p>
             </div>
           </div>
           <p className="text-[10px] text-indigo-400 font-semibold pt-1 border-t border-indigo-500/10">

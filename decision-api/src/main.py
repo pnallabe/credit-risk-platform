@@ -895,7 +895,25 @@ async def _run_pipeline(
         ocr_confidence=app_req.ocr_confidence,
     )
     # Merge tenant cutoffs into the engine call when supported
-    decision_result = make_decision(decision_req, policy_overrides=policy_cutoffs or None)
+    if tenant_id == "OPEN_BANKING_SBX":
+        from decision_engine.engine import DecisionResult
+        from rules.open_banking_rules import evaluate_open_banking_rules
+
+        ob_eval = evaluate_open_banking_rules(features_df.iloc[0].to_dict())
+        decision_result = DecisionResult(
+            application_id=app_req.application_id,
+            decision=ob_eval["status"],
+            recommended_rate=pricing_result.recommended_rate if ob_eval["status"] == "APPROVE" else None,
+            loan_terms={},
+            reason_codes=["OBP_RULE"] if ob_eval["status"] != "APPROVE" else [],
+            decision_timestamp=datetime.now(timezone.utc),
+            decision_latency_ms=0,
+            override_records=[],
+            conditions=[],
+            alternative_structures=[]
+        )
+    else:
+        decision_result = make_decision(decision_req, policy_overrides=policy_cutoffs or None)
 
     # 6. SHAP explanation (best effort)
     explanation_factors: List[ExplanationFactor] = []

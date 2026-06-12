@@ -12,8 +12,8 @@ export default async function UnderwriterQueuePage() {
   const userProps = {
     name: session.user.name ?? "Underwriter",
     role: session.user.role ?? "underwriter",
-    tenantId: session.user.tenantId ?? "lendsmart",
-    tenantName: session.user.tenantName ?? "LendSmart",
+    tenantId: session.user.tenantId ?? "helixdecisions",
+    tenantName: session.user.tenantName ?? "Helix Decisions",
   };
 
   return <UnderwriterQueueClient user={userProps} />;

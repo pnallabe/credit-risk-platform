@@ -64,3 +64,6 @@ strawberry-graphql[fastapi]>=0.220.0
 
 # GAP-25 — Policy Version RSA Signing
 cryptography>=42.0.0
+
+# Secrets Manager
+google-cloud-secret-manager>=2.19.0

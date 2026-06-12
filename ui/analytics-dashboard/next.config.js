@@ -5,8 +5,8 @@ const nextConfig = {
   async rewrites() {
     return [
       {
-        source: "/api/v1/:path*",
-        destination: `${process.env.DECISION_API_URL || "http://localhost:8081"}/v1/:path*`,
+        source: "/api/analytics/:path*",
+        destination: `${process.env.ANALYTICS_API_URL || "http://localhost:8003"}/v1/analytics/:path*`,
       },
       {
         source: "/api/agent/:path*",

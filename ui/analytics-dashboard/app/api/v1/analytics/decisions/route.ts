@@ -23,10 +23,10 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const tenantId = session.user.tenantId ?? "lendsmart";
+  const tenantId = session.user.tenantId ?? "helixdecisions";
 
   // Custom thresholds based on tenant
-  let targetApprovalRate = 0.658; // 65.8% for LendSmart
+  let targetApprovalRate = 0.658; // 65.8% for Helix Decisions
   let targetReviewRate = 0.082;   // 8.2%
   if (tenantId === "lending_club") {
     targetApprovalRate = 0.713;   // 71.3% for Lending Club

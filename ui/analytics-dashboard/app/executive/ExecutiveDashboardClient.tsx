@@ -97,7 +97,7 @@ function NLGSummaryWidget({ tenantId, tenantName }: NLGSummaryWidgetProps) {
         headline: "Lending Club portfolio performing within risk appetite — model health stable",
         narrative: MOCK_SUMMARY.narrative
           .replace("65.8% approval rate", "71.3% approval rate")
-          .replace("LendSmart", "Lending Club")
+          .replace("Helix Decisions", "Lending Club")
           .replace("$18.2M", "$24.5M")
           .replace("42 pending cases", "28 pending cases"),
         key_metrics_table: MOCK_SUMMARY.key_metrics_table.map((m) => {

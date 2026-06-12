@@ -31,6 +31,7 @@ import {
   Clock,
   Settings,
 } from "lucide-react";
+import { signOut } from "next-auth/react";
 import type { UserRole } from "@/auth";
 import { cn } from "@/lib/utils";
 
@@ -199,9 +200,13 @@ export function DashboardShell({
               <p className="text-xs font-semibold text-zinc-200 truncate">{userName}</p>
               <p className="text-xs text-zinc-500">{ROLE_LABELS[role]}</p>
             </div>
-            <a href="/auth/signout" className="text-zinc-400 hover:text-rose-400" aria-label="Sign out">
+            <button
+              onClick={() => signOut({ callbackUrl: "/auth/signin" })}
+              className="text-zinc-400 hover:text-rose-400"
+              aria-label="Sign out"
+            >
               <LogOut className="w-3.5 h-3.5" />
-            </a>
+            </button>
           </div>
         </div>
       </div>
@@ -278,9 +283,13 @@ export function DashboardShell({
                 <p className="text-xs font-semibold text-zinc-200 truncate">{userName}</p>
                 <p className="text-xs text-zinc-500">{ROLE_LABELS[role]}</p>
               </div>
-              <a href="/auth/signout" className="text-zinc-400 hover:text-rose-400" aria-label="Sign out">
+              <button
+                onClick={() => signOut({ callbackUrl: "/auth/signin" })}
+                className="text-zinc-400 hover:text-rose-400"
+                aria-label="Sign out"
+              >
                 <LogOut className="w-3.5 h-3.5" />
-              </a>
+              </button>
             </div>
           </div>
         )}

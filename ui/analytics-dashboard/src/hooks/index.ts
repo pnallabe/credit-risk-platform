@@ -112,28 +112,24 @@ export function useDecisionsData(dateRange?: string | { start: string; end: stri
   }
   return useSWR<DecisionsStats>(`/api/v1/analytics/decisions${params}`, fetcher, {
     refreshInterval: REVALIDATE * 1000,
-    fallbackData: getMockDecisionsData(),
   });
 }
 
 export function useModelMetrics() {
   return useSWR<ModelMetrics>("/api/v1/analytics/model-metrics", fetcher, {
     refreshInterval: REVALIDATE * 1000,
-    fallbackData: getMockModelMetrics(),
   });
 }
 
 export function useDriftReport() {
   return useSWR<DriftReport>("/api/v1/analytics/drift", fetcher, {
     refreshInterval: REVALIDATE * 1000,
-    fallbackData: getMockDriftReport(),
   });
 }
 
 export function useFairLendingReport() {
   return useSWR<FairLendingReport>("/api/v1/analytics/fair-lending", fetcher, {
     refreshInterval: REVALIDATE * 1000,
-    fallbackData: getMockFairLendingReport(),
   });
 }
 

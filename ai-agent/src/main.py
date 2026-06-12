@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 import re as _re
 import sys as _sys
+from security.secrets_manager import get_secret
 
 # Make compliance/ importable from the project root (two dirs up from src/)
 _sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -66,8 +67,8 @@ logger = logging.getLogger(__name__)
 # Config
 # ---------------------------------------------------------------------------
 # OV-02: No default — service refuses to start without an explicit PostgreSQL URL.
-DATABASE_URL = os.getenv("DATABASE_URL", "")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+DATABASE_URL = get_secret("DATABASE_URL", "")
+OPENAI_API_KEY = get_secret("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
 RATE_LIMIT = os.getenv("RATE_LIMIT", "20/minute")
 
