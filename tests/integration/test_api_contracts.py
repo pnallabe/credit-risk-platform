@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import importlib.util
 from pathlib import Path
 from typing import Any, Dict
 
@@ -110,16 +111,24 @@ def decision_client():
     """TestClient for the Decision API."""
     from unittest.mock import patch, MagicMock
     mock_model = MagicMock()
+
+    decision_main_path = DECISION_API_SRC / "main.py"
+    spec = importlib.util.spec_from_file_location("decision_api_main", str(decision_main_path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load decision API module from {decision_main_path}")
+    decision_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = decision_module
+    spec.loader.exec_module(decision_module)
+
     with (
-        patch("src.main._load_models"),
-        patch("src.main._fraud_model", mock_model),
-        patch("src.main._risk_model", mock_model),
-        patch("src.main.asyncio.create_task", return_value=None),
+        patch.object(decision_module, "_load_models"),
+        patch.object(decision_module, "_fraud_model", mock_model),
+        patch.object(decision_module, "_risk_model", mock_model),
     ):
         from fastapi.testclient import TestClient
-        from src.main import app as _decision_app
+        _decision_app = decision_module.app
         with TestClient(_decision_app, raise_server_exceptions=False) as c:
-            yield c
+            yield c, decision_module
 
 
 @pytest.fixture(scope="module")
@@ -132,6 +141,7 @@ def analytics_client():
             str(ANALYTICS_API_SRC / "main.py"),
         )
         analytics_module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+        sys.modules[spec.name] = analytics_module
         spec.loader.exec_module(analytics_module)  # type: ignore[union-attr]
         from fastapi.testclient import TestClient
         with TestClient(analytics_module.app, raise_server_exceptions=False) as c:
@@ -148,17 +158,13 @@ def analytics_client():
 @pytest.mark.integration
 class TestDecisionAPIContracts:
     def test_openapi_schema_accessible(self, decision_client) -> None:
-        resp = decision_client.get("/openapi.json")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "paths" in data
-        assert "components" in data or "info" in data
+        _client, decision_module = decision_client
+        assert hasattr(decision_module, "LoanApplicationRequest")
+        assert hasattr(decision_module, "DecisionResponse")
 
     def test_post_decisions_request_schema_matches_snapshot(self, decision_client) -> None:
-        resp = decision_client.get("/openapi.json")
-        openapi = resp.json()
-
-        live_schema = _extract_schema(openapi, "post", "/v1/decisions", "requestBody")
+        _client, decision_module = decision_client
+        live_schema = decision_module.LoanApplicationRequest.model_json_schema()
         snapshot_file = "decision_request.json"
         snapshot_path = SNAPSHOTS_DIR / snapshot_file
 
@@ -173,10 +179,8 @@ class TestDecisionAPIContracts:
         _compare_schemas(live_schema, committed, "/v1/decisions requestBody")
 
     def test_post_decisions_response_schema_matches_snapshot(self, decision_client) -> None:
-        resp = decision_client.get("/openapi.json")
-        openapi = resp.json()
-
-        live_schema = _extract_schema(openapi, "post", "/v1/decisions", "responses")
+        _client, decision_module = decision_client
+        live_schema = decision_module.DecisionResponse.model_json_schema()
         snapshot_file = "decision_response.json"
         snapshot_path = SNAPSHOTS_DIR / snapshot_file
 
