@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import os
 import sys
+import importlib.util
+import asyncio
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -27,7 +30,7 @@ if str(DECISION_API_SRC.parent) not in sys.path:
 
 # Force SQLite for tests so no external DB is required
 os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///./test_integration.db")
-os.environ.setdefault("JWT_SECRET", "your-secret-key-change-in-production")
+os.environ.setdefault("JWT_SECRET", "integration-test-secret-key-32chars")
 
 
 # -----------------------------------------------------------------------
@@ -43,11 +46,51 @@ def anyio_backend():
 async def app_client():
     """Async HTTPX test client wrapping the decision-api FastAPI app."""
     import httpx
-    from src.main import app  # noqa: E402
+    import jwt
+
+    decision_main_path = DECISION_API_SRC / "main.py"
+    spec = importlib.util.spec_from_file_location("decision_api_main", str(decision_main_path))
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load decision API module from {decision_main_path}")
+    decision_module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = decision_module
+    spec.loader.exec_module(decision_module)
+
+    # Integration tests run in-process without dedicated lifespan orchestration.
+    # Initialize semaphore globals that batch endpoints expect from startup.
+    if getattr(decision_module, "_batch_global_semaphore", None) is None:
+        decision_module._batch_global_semaphore = asyncio.Semaphore(  # type: ignore[attr-defined]
+            decision_module.BATCH_CONCURRENCY_GLOBAL_LIMIT
+        )
+    if getattr(decision_module, "_tenant_semaphore_registry", None) is None:
+        decision_module._tenant_semaphore_registry = decision_module._TenantSemaphoreRegistry(  # type: ignore[attr-defined]
+            decision_module.TENANT_BATCH_CONCURRENCY_DEFAULT
+        )
+
+    # Disable Redis-backed middleware in tests to avoid cross-event-loop
+    # client reuse errors from global Redis singletons.
+    import middleware.rate_limit as rate_limit_mw
+    import middleware.idempotency as idempotency_mw
+
+    rate_limit_mw._REDIS_AVAILABLE = False
+    rate_limit_mw._REDIS_CLIENT = None
+    idempotency_mw._REDIS_AVAILABLE = False
+    idempotency_mw._REDIS_CLIENT = None
+
+    app = decision_module.app
+
+    token_payload = {
+        "sub": "integration-test-user",
+        "tenant_id": "synthetic_tenant",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        "iat": datetime.now(timezone.utc),
+    }
+    token = jwt.encode(token_payload, os.environ["JWT_SECRET"], algorithm="HS256")
 
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
+        headers={"Authorization": f"Bearer {token}"},
     ) as client:
         yield client
 
