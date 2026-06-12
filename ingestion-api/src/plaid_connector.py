@@ -43,6 +43,7 @@ import statistics
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
+from security.secrets_manager import get_secret
 from typing import Any, Dict, List, Literal, Optional
 
 import httpx
@@ -392,8 +393,8 @@ class PlaidConnector(BankDataConnectorBase):
     provider_name = "plaid"
 
     def __init__(self) -> None:
-        self.client_id = os.getenv("PLAID_CLIENT_ID", "")
-        self.secret = os.getenv("PLAID_SECRET", "")
+        self.client_id = get_secret("PLAID_CLIENT_ID", "")
+        self.secret = get_secret("PLAID_SECRET", "")
         self.base_url = PLAID_BASE_URLS.get(PLAID_ENV, PLAID_BASE_URLS["sandbox"])
 
     def _headers(self) -> Dict[str, str]:
@@ -755,9 +756,9 @@ class OpenBankProjectConnector(BankDataConnectorBase):
     def __init__(self) -> None:
         self.base_url = os.getenv("OBP_BASE_URL", "").rstrip("/")
         self.bank_id = os.getenv("OBP_BANK_ID", "")
-        self.access_token = os.getenv("OBP_ACCESS_TOKEN", "")
-        self.consumer_key = os.getenv("OBP_CONSUMER_KEY", "")
-        self.consumer_secret = os.getenv("OBP_CONSUMER_SECRET", "")
+        self.access_token = get_secret("OBP_ACCESS_TOKEN", "")
+        self.consumer_key = get_secret("OBP_CONSUMER_KEY", "")
+        self.consumer_secret = get_secret("OBP_CONSUMER_SECRET", "")
 
     def _headers(self, access_token: Optional[str] = None) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}

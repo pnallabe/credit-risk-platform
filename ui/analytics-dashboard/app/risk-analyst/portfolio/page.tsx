@@ -12,8 +12,8 @@ export default async function PortfolioPage() {
   const userProps = {
     name: session.user.name ?? "Risk Analyst",
     role: session.user.role ?? "risk_analyst",
-    tenantId: session.user.tenantId ?? "lendsmart",
-    tenantName: session.user.tenantName ?? "LendSmart",
+    tenantId: session.user.tenantId ?? "helixdecisions",
+    tenantName: session.user.tenantName ?? "Helix Decisions",
   };
 
   return <PortfolioClient user={userProps} />;

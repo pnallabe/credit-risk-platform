@@ -7,7 +7,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const tenantId = session.user.tenantId ?? "lendsmart";
+  const tenantId = session.user.tenantId ?? "helixdecisions";
 
   let dir_score = 0.87;
   let dir_flag = false;

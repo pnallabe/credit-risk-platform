@@ -20,7 +20,7 @@ export default async function RegulatorLayout({
       {/* Read-only header */}
       <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center justify-between shadow-sm">
         <div className="flex items-center gap-3">
-          <span className="text-lg font-bold text-gray-900">LendSmart</span>
+          <span className="text-lg font-bold text-gray-900">Helix Decisions</span>
           <span className="text-gray-300">|</span>
           <span className="text-sm font-medium text-gray-600">Regulator Portal</span>
         </div>

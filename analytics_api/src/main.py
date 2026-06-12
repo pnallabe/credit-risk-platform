@@ -41,6 +41,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Security, st
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from security.secrets_manager import get_secret
 
 # Make project root importable when running directly
 ROOT = Path(__file__).parents[3]
@@ -65,7 +66,7 @@ _BQ_ALLOWED_DATASETS: Dict[str, str] = {
     "freddie_mac_sflld": BQ_DATASET_FREDDIE,
 }
 
-_JWT_SECRET = os.getenv("JWT_SECRET", "")
+_JWT_SECRET = get_secret("JWT_SECRET", "")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
 # Cache TTL in seconds (default 5 minutes)
@@ -509,11 +510,11 @@ async def health() -> Dict[str, Any]:
 # executed server-side.  LucidCredit only sends a question and receives data.
 # ===========================================================================
 
-_SERVICE_KEY = os.getenv("ANALYTICS_SERVICE_KEY", "dev-analytics-key")
+_SERVICE_KEY = get_secret("ANALYTICS_SERVICE_KEY", "dev-analytics-key")
 
 # Azure OpenAI config for internal NL→SQL
 _AZ_ENDPOINT   = os.getenv("AZURE_OPENAI_ENDPOINT", "")
-_AZ_API_KEY    = os.getenv("AZURE_OPENAI_API_KEY", "")
+_AZ_API_KEY    = get_secret("AZURE_OPENAI_API_KEY", "")
 _AZ_API_VER    = os.getenv("AZURE_OPENAI_API_VERSION", "2025-01-01-preview")
 _AZ_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1-2025-04-14")
 

@@ -41,41 +41,41 @@ interface DemoUser {
 
 // Demo users categorized by Tenant for development/testing
 const DEMO_USERS: Record<string, DemoUser> = {
-  // --- LendSmart Tenant ---
-  "underwriter@lendsmart.example": {
+  // --- Prosper Tenant ---
+  "underwriter@prosper.example": {
     password: "demo1234", // pragma: allowlist secret
     role: "underwriter",
     name: "Alex Chen",
-    tenantId: "lendsmart",
-    tenantName: "LendSmart",
+    tenantId: "prosper",
+    tenantName: "Prosper",
   },
-  "analyst@lendsmart.example": {
+  "analyst@prosper.example": {
     password: "demo1234", // pragma: allowlist secret
     role: "risk_analyst",
     name: "Sam Rivera",
-    tenantId: "lendsmart",
-    tenantName: "LendSmart",
+    tenantId: "prosper",
+    tenantName: "Prosper",
   },
-  "compliance@lendsmart.example": {
+  "compliance@prosper.example": {
     password: "demo1234", // pragma: allowlist secret
     role: "compliance",
     name: "Morgan Lee",
-    tenantId: "lendsmart",
-    tenantName: "LendSmart",
+    tenantId: "prosper",
+    tenantName: "Prosper",
   },
-  "scientist@lendsmart.example": {
+  "scientist@prosper.example": {
     password: "demo1234", // pragma: allowlist secret
     role: "data_scientist",
     name: "Jordan Kim",
-    tenantId: "lendsmart",
-    tenantName: "LendSmart",
+    tenantId: "prosper",
+    tenantName: "Prosper",
   },
-  "exec@lendsmart.example": {
+  "exec@prosper.example": {
     password: "demo1234", // pragma: allowlist secret
     role: "executive",
     name: "Casey Park",
-    tenantId: "lendsmart",
-    tenantName: "LendSmart",
+    tenantId: "prosper",
+    tenantName: "Prosper",
   },
 
   // --- Lending Club Tenant ---
@@ -101,13 +101,31 @@ const DEMO_USERS: Record<string, DemoUser> = {
     tenantName: "Lending Club",
   },
 
+  // --- Freddie Mac Tenant ---
+  "analyst@freddiemac.example": {
+    password: "demo1234", // pragma: allowlist secret
+    role: "risk_analyst",
+    name: "David Smith",
+    tenantId: "freddie_mac",
+    tenantName: "Freddie Mac",
+  },
+
+  // --- Synthetic Tenant ---
+  "scientist@synthetic.example": {
+    password: "demo1234", // pragma: allowlist secret
+    role: "data_scientist",
+    name: "AI Simulator",
+    tenantId: "synthetic_tenant",
+    tenantName: "Synthetic Simulator",
+  },
+
   // --- Regulator (Platform Supervisor Scope) ---
-  "regulator@lendsmart.example": {
+  "regulator@platform.example": {
     password: "demo1234", // pragma: allowlist secret
     role: "regulator",
     name: "Taylor Reyes",
     tenantId: "all",
-    tenantName: "AgentHive Platform",
+    tenantName: "Helix Platform",
   },
 };
 
@@ -136,6 +154,18 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     }),
   ],
   session: { strategy: "jwt" },
+  useSecureCookies: process.env.NODE_ENV === "production",
+  cookies: {
+    sessionToken: {
+      name: "__session",
+      options: {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        secure: process.env.NODE_ENV === "production",
+      },
+    },
+  },
   callbacks: {
     async jwt({ token, user }) {
       if (user) {

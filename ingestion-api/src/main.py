@@ -998,6 +998,14 @@ async def los_webhook(
     return {"received": True, "los_application_id": payload.los_application_id}
 
 
+@app.post("/tenant/openbanking/sync")
+async def sync_open_banking(credentials: HTTPAuthorizationCredentials = Security(security)):
+    from auth import verify_token
+    token_data = await verify_token(credentials.credentials)
+    tenant_id = token_data.get("tenant_id")
+    if tenant_id != "OPEN_BANKING_SBX":
+        raise HTTPException(status_code=403, detail="Not authorized for Open Banking sync")
+    return {"status": "success", "message": "Synced Open Banking Data"}
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
