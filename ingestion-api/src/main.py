@@ -176,6 +176,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Tenant inquiries router (Prompt 18)
+try:
+    from tenant_inquiries import router as _inquiries_router
+    app.include_router(_inquiries_router)
+except ImportError:
+    try:
+        from src.tenant_inquiries import router as _inquiries_router  # type: ignore[assignment]
+        app.include_router(_inquiries_router)
+    except ImportError:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Retry helper
