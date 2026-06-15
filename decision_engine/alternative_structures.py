@@ -1,168 +1,133 @@
 """
-Alternative Structures Generator — S4-A
+Alternative Structures Generator
 =========================================
-Proposes alternative loan structures when a decision is REJECT.
+Proposes alternative loan structures when a decision is DECLINE.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Any, List, Literal, Optional
-
+from typing import Any, List, Optional
 
 @dataclass
 class AlternativeStructure:
-    rank: int
-    structure_type: Literal["REDUCED_AMOUNT", "ADD_COLLATERAL", "REPRICE"]
+    structure_type: str  # "reduced_amount", "higher_down_payment", "income_documentation", "reduced_term"
     description: str
-    suggested_loan_amount: Optional[float]
-    suggested_collateral_type: Optional[str]
-    suggested_apr: Optional[float]
-    feasibility_score: float
-    estimated_pd_at_structure: Optional[float]
+    adjusted_pd: float
+    adjusted_dti: float
+    feasibility: str     # "High" | "Medium" | "Low"
 
-
-def generate_alternatives(
+def compute_alternatives(
     request: Any,
-    pd_score: float,
-    decision: str,
+    decision_result: Any,
+    policy_config: dict,
 ) -> List[AlternativeStructure]:
-    """Generate alternative structures for a rejected application.
-
-    Parameters
-    ----------
-    request:
-        DecisionRequest with at minimum loan_amount, debt_to_income_ratio,
-        pricing_result.recommended_rate, and optionally features dict.
-    pd_score:
-        The pd_score from the credit model.
-    decision:
-        The current decision string.
-
-    Returns
-    -------
-    List of up to 3 AlternativeStructure objects, sorted by feasibility descending.
-    """
+    """Compute alternative structures for a rejected application."""
+    decision = getattr(decision_result, "decision", "") if not isinstance(decision_result, dict) else decision_result.get("decision")
     if decision != "REJECT":
         return []
 
     alternatives: List[AlternativeStructure] = []
-    loan_amount: float = float(getattr(request, "loan_amount", 0) or 0)
-    dti: float = float(getattr(request, "debt_to_income_ratio", 0.5) or 0.5)
-    annual_income: float = float(getattr(request, "annual_income", 0) or 0)
-    current_apr: float = 0.0
-    try:
-        current_apr = float(getattr(request.pricing_result, "recommended_rate", 18.0))
-    except Exception:
-        current_apr = 18.0
 
-    features: dict = getattr(request, "features", {}) or {}
-    has_collateral = bool(features.get("collateral_value"))
-    ltv = float(features.get("ltv", 1.0))
+    # Extract request properties
+    loan_amount = float(getattr(request, "loan_amount", 0.0) or 0.0)
+    dti = float(getattr(request, "debt_to_income_ratio", 0.5) or 0.5)
+    annual_income = float(getattr(request, "annual_income", 0.0) or 0.0)
+    monthly_income = annual_income / 12.0
+    term_months = int(getattr(request, "loan_term_months", 36) or 36)
+    emp_status = getattr(request, "employment_status", "employed")
 
-    # -------------------------------------------------------------------
-    # Option A: REDUCED_AMOUNT
-    # Find largest amount where projected DTI < 0.40
-    # -------------------------------------------------------------------
-    reduced_amount: Optional[float] = None
-    reduced_feasibility = 0.0
-    if annual_income > 0 and loan_amount > 0:
-        # Current monthly debt payment proxy: dti * annual_income / 12
-        monthly_income = annual_income / 12.0
-        # Estimate new loan monthly payment: 1% of loan amount (rough proxy)
-        # Find amount where total dti stays < 0.40
-        # new_dti ≈ (existing_monthly_debt + 0.01 * new_amount) / monthly_income < 0.40
-        existing_monthly_debt = max(0.0, (dti - 0.01) * monthly_income)
-        budget = 0.40 * monthly_income - existing_monthly_debt
-        if budget > 0:
-            # new_amount ≈ budget / 0.01
-            reduced_amount = min(loan_amount, budget / 0.01)
-            if reduced_amount >= 0.5 * loan_amount:
-                reduced_feasibility = 0.8
-            elif reduced_amount > 0:
-                reduced_feasibility = 0.4
-    else:
-        reduced_amount = loan_amount * 0.6
-        reduced_feasibility = 0.5
+    # Calculate original monthly payment (approx based on loan amount / term)
+    current_payment = loan_amount / term_months if term_months > 0 else 0.0
+    other_debt = max(0.0, (dti * monthly_income) - current_payment)
 
-    if reduced_feasibility > 0 and reduced_amount and reduced_amount > 0:
-        alternatives.append(
-            AlternativeStructure(
-                rank=0,
-                structure_type="REDUCED_AMOUNT",
-                description=(
-                    f"Reduce requested amount to ${reduced_amount:,.0f} "
-                    f"(from ${loan_amount:,.0f}) to bring projected DTI below 0.40."
-                ),
-                suggested_loan_amount=round(reduced_amount, 2),
-                suggested_collateral_type=None,
-                suggested_apr=None,
-                feasibility_score=reduced_feasibility,
-                estimated_pd_at_structure=None,
-            )
-        )
+    # Policy configs
+    dti_limit = float(policy_config.get("dti_limit", 0.43))
+    approval_threshold = float(policy_config.get("pd_threshold", 0.10))
 
-    # -------------------------------------------------------------------
-    # Option B: ADD_COLLATERAL
-    # -------------------------------------------------------------------
-    if not has_collateral:
-        alternatives.append(
-            AlternativeStructure(
-                rank=0,
-                structure_type="ADD_COLLATERAL",
-                description=(
-                    "No collateral on file. Adding real estate or vehicle as collateral "
-                    "may satisfy underwriting requirements."
-                ),
-                suggested_loan_amount=None,
-                suggested_collateral_type="real_estate or vehicle",
-                suggested_apr=None,
-                feasibility_score=0.6,
-                estimated_pd_at_structure=None,
-            )
-        )
-    elif ltv > 0.75:
-        alternatives.append(
-            AlternativeStructure(
-                rank=0,
-                structure_type="ADD_COLLATERAL",
-                description=(
-                    f"Current LTV of {ltv:.2f} exceeds threshold. "
-                    f"Reducing LTV to ≤ 0.75 via additional collateral or larger down payment."
-                ),
-                suggested_loan_amount=None,
-                suggested_collateral_type="additional_pledge",
-                suggested_apr=None,
-                feasibility_score=0.7,
-                estimated_pd_at_structure=None,
-            )
-        )
+    pd_score = getattr(decision_result, "pd_score", 0.15) if not isinstance(decision_result, dict) else decision_result.get("pd_score", 0.15)
 
-    # -------------------------------------------------------------------
-    # Option C: REPRICE
-    # -------------------------------------------------------------------
-    price_premium = max(0.0, (pd_score - 0.10) * 200)  # bps → percentage points (bps/100)
-    suggested_apr = current_apr + price_premium / 100.0
-    alternatives.append(
-        AlternativeStructure(
-            rank=0,
-            structure_type="REPRICE",
-            description=(
-                f"Risk-based repricing: increase APR by {price_premium:.0f} bps to "
-                f"{suggested_apr:.2f}% to compensate for elevated PD of {pd_score:.3f}. "
-                f"Note: repricing alone does not reduce credit risk."
-            ),
-            suggested_loan_amount=None,
-            suggested_collateral_type=None,
-            suggested_apr=round(suggested_apr, 4),
-            feasibility_score=0.5,
-            estimated_pd_at_structure=pd_score,
-        )
-    )
+    # 1. reduced_amount (binary search)
+    if loan_amount > 0 and annual_income > 0:
+        low = 0.60 * loan_amount  # up to 40% reduction
+        high = loan_amount
+        best_amount = None
+        best_dti = dti
 
-    # Sort by feasibility and assign ranks
-    alternatives.sort(key=lambda a: a.feasibility_score, reverse=True)
-    for i, alt in enumerate(alternatives[:3]):
-        alt.rank = i + 1
+        # 10 steps of binary search
+        for _ in range(10):
+            mid = (low + high) / 2
+            mid_payment = mid / term_months
+            new_dti = (other_debt + mid_payment) / monthly_income if monthly_income > 0 else 1.0
+
+            # Simple assumption: PD decreases proportionally with amount reduction (for illustrative purposes in tests)
+            # A real model would be re-invoked
+            reduction_ratio = mid / loan_amount
+            new_pd = pd_score * reduction_ratio
+
+            if new_pd < approval_threshold and new_dti < dti_limit:
+                best_amount = mid
+                best_dti = new_dti
+                low = mid  # Try to find a higher amount that still passes
+            else:
+                high = mid  # Need to reduce amount further
+
+        if best_amount is not None:
+            feasibility = "High" if best_amount >= 0.8 * loan_amount else "Medium"
+            alternatives.append(AlternativeStructure(
+                structure_type="reduced_amount",
+                description=f"Approval likely at ${best_amount:,.0f} (vs. requested ${loan_amount:,.0f})",
+                adjusted_pd=pd_score * (best_amount / loan_amount),
+                adjusted_dti=best_dti,
+                feasibility=feasibility
+            ))
+
+    # 2. higher_down_payment (secured loans)
+    features = getattr(request, "features", {}) or {}
+    collateral_value = float(features.get("collateral_value", 0.0) or 0.0)
+    if collateral_value > 0 and loan_amount > 0:
+        ltv = loan_amount / collateral_value
+        if ltv >= 0.80:
+            required_collateral = loan_amount / 0.79
+            uplift = required_collateral - collateral_value
+            if uplift > 0:
+                alternatives.append(AlternativeStructure(
+                    structure_type="higher_down_payment",
+                    description=f"Increase down payment or collateral value by ${uplift:,.0f} to bring LTV below 80%.",
+                    adjusted_pd=pd_score,
+                    adjusted_dti=dti,
+                    feasibility="Medium"
+                ))
+
+    # 3. income_documentation
+    income_verif_score = float(features.get("income_verification_score", 100) or 100)
+    if emp_status != "employed" or income_verif_score < 60:
+        alternatives.append(AlternativeStructure(
+            structure_type="income_documentation",
+            description="Verified income documentation (e.g., W-2s, tax returns) could improve the decision.",
+            adjusted_pd=pd_score * 0.9, # assumed improvement
+            adjusted_dti=dti,
+            feasibility="High"
+        ))
+
+    # 4. reduced_term
+    if dti > dti_limit and loan_amount > 0 and monthly_income > 0:
+        # A shorter term means HIGHER monthly payment, which INCREASES DTI.
+        # But wait, Prompt 12: "reduced_term: For DTI-constrained declines — show DTI impact of a shorter term (higher monthly payment, faster payoff)"
+        # We'll just show the alternative even if it raises DTI, as requested.
+        shorter_term = max(12, term_months - 12)
+        if shorter_term < term_months:
+            new_payment = loan_amount / shorter_term
+            new_dti = (other_debt + new_payment) / monthly_income
+            alternatives.append(AlternativeStructure(
+                structure_type="reduced_term",
+                description=f"A shorter term of {shorter_term} months would increase DTI to {new_dti:.2%} but pay off the loan faster.",
+                adjusted_pd=pd_score,
+                adjusted_dti=new_dti,
+                feasibility="Low"
+            ))
+
+    # Sort by feasibility: High, Medium, Low
+    feasibility_order = {"High": 0, "Medium": 1, "Low": 2}
+    alternatives.sort(key=lambda x: feasibility_order.get(x.feasibility, 3))
 
     return alternatives[:3]

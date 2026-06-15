@@ -232,3 +232,40 @@ def render_c1_text(notice: AdverseActionNotice) -> str:
 def notice_to_dict(notice: AdverseActionNotice) -> Dict[str, Any]:
     """Return a JSON-serialisable dict for audit log storage."""
     return dataclasses.asdict(notice)
+
+
+def generate_conditional_approval_notice(
+    application_id: str,
+    applicant_name: str,
+    creditor_name: str,
+    conditional_approval: Any,
+) -> str:
+    """Generate a conditional approval letter using Jinja2 template."""
+    import jinja2
+    from pathlib import Path
+
+    _template_dir = Path(__file__).parent / "templates"
+    _jinja_env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(_template_dir),
+        autoescape=True,
+        trim_blocks=True,
+        lstrip_blocks=True,
+    )
+
+    # Get conditions based on type
+    if isinstance(conditional_approval, dict):
+        conds = conditional_approval.get("conditions", [])
+        deadline = conditional_approval.get("condition_deadline_days", 30)
+    else:
+        conds = getattr(conditional_approval, "conditions", [])
+        deadline = getattr(conditional_approval, "condition_deadline_days", 30)
+
+    template = _jinja_env.get_template("conditional_approval.j2")
+    return template.render(
+        action_date=date.today().isoformat(),
+        creditor_name=creditor_name,
+        applicant_name=applicant_name,
+        application_id=application_id,
+        deadline_days=deadline,
+        conditions=conds
+    )

@@ -131,10 +131,7 @@ class ConcentrationMonitor:
         -------
         ConcentrationReport
         """
-        required_cols = {"account_id", "exposure", "naics_2d", "state", "risk_grade", "product_type"}
-        missing = required_cols - set(decisions_df.columns)
-        if missing:
-            raise ValueError(f"decisions_df is missing columns: {missing}")
+        decisions_df = self._validate_and_fill_defaults(decisions_df)
 
         total_accounts = len(decisions_df)
         total_exposure = float(decisions_df["exposure"].sum())
@@ -164,6 +161,19 @@ class ConcentrationMonitor:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _validate_and_fill_defaults(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Fill NULL/missing dimension values with an 'Unknown' sentinel."""
+        required_cols = {"account_id", "exposure", "naics_2d", "state", "risk_grade", "product_type"}
+        missing = required_cols - set(df.columns)
+        if missing:
+            raise ValueError(f"decisions_df is missing columns: {missing}")
+
+        df = df.copy()
+        for col in ["naics_2d", "state", "risk_grade", "product_type"]:
+            df[col] = df[col].fillna("Unknown")
+
+        return df
 
     def _compute_dimension(
         self,

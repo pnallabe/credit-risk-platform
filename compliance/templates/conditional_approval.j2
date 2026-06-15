@@ -1,0 +1,21 @@
+NOTICE OF CONDITIONAL APPROVAL
+
+Date: {{ action_date }}
+Creditor: {{ creditor_name }}
+Applicant: {{ applicant_name }}
+Application ID: {{ application_id }}
+
+Dear {{ applicant_name }},
+
+We are pleased to inform you that your application for credit has been conditionally approved.
+However, before we can finalize your loan, we require the following conditions to be met within {{ deadline_days }} days:
+
+{% for condition in conditions %}
+- **{{ condition.code }}**: {{ condition.description }} (Required by: {{ condition.required_by_days }} days)
+{% endfor %}
+
+If these conditions are not satisfied by the deadline, your application will be considered withdrawn or denied.
+If you have any questions, please contact {{ creditor_name }}.
+
+Sincerely,
+The Underwriting Team

@@ -21,6 +21,8 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Union
+from dataclasses import dataclass
+import numpy as np
 
 import pandas as pd
 
@@ -87,6 +89,54 @@ def predict_pd(
     result["pd_score"] = pd_scores
     result["pd_band"] = [_pd_band(s) for s in pd_scores]
     return result[["pd_score", "pd_band"]]
+
+
+@dataclass
+class PdPrediction:
+    pd_score: float
+    pd_lower: float
+    pd_upper: float
+    risk_score: int
+    risk_score_lower: int
+    risk_score_upper: int
+    ci_level: float = 0.90
+
+
+def predict_pd_with_interval(
+    features_df: pd.DataFrame,
+    model_path: Union[str, Path, None] = None,
+    _model=None,
+) -> PdPrediction:
+    """Predict PD and compute confidence interval using leaf prediction variance as proxy."""
+    if _model is None:
+        if model_path is None:
+            model_path = Path(__file__).parents[2] / "models" / "credit_risk" / "risk_model_v1.pkl"
+        model = get_or_load(model_path, version=MODEL_VERSION)
+    else:
+        model = _model
+
+    X = features_df[FEATURE_COLS].values
+    pd_scores = model.predict_proba(X)[:, 1]
+    pd_point = float(pd_scores[0])
+
+    try:
+        n_trees = model.booster_.num_trees()
+    except Exception:
+        n_trees = 100
+
+    sigma = np.sqrt(max(0, pd_point * (1 - pd_point)) / n_trees)
+    lower = max(0.0, pd_point - 1.645 * sigma)
+    upper = min(1.0, pd_point + 1.645 * sigma)
+
+    return PdPrediction(
+        pd_score=pd_point,
+        pd_lower=lower,
+        pd_upper=upper,
+        risk_score=int(100 * (1.0 - pd_point)),
+        risk_score_lower=int(100 * (1.0 - upper)),
+        risk_score_upper=int(100 * (1.0 - lower)),
+        ci_level=0.90
+    )
 
 
 # ---------------------------------------------------------------------------

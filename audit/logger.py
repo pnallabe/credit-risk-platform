@@ -110,7 +110,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
     policy_version              TEXT,
     record_hash       TEXT,
     previous_hash     TEXT,
-    hash_algorithm    TEXT NOT NULL DEFAULT 'sha256'
+    hash_algorithm    TEXT NOT NULL DEFAULT 'sha256',
+    naics_2d          TEXT,
+    borrower_state    TEXT,
+    loan_amount       REAL
 );
 """
 
@@ -123,7 +126,8 @@ INSERT INTO audit_log (
     scenario_weighted_cnpv, cnpv_base, cnpv_worsening, cnpv_recession,
     ftp_rate_bps, rwa_usd, capital_available_usd,
     acquisition_signal, recommended_apr, recommended_credit_limit,
-    scenario_name, model_version_valuation, policy_version
+    scenario_name, model_version_valuation, policy_version,
+    naics_2d, borrower_state, loan_amount
 ) VALUES (
     :log_id, :tenant_id, :application_id, :logged_at, :input_features,
     :model_version, :feature_version,
@@ -132,7 +136,8 @@ INSERT INTO audit_log (
     :scenario_weighted_cnpv, :cnpv_base, :cnpv_worsening, :cnpv_recession,
     :ftp_rate_bps, :rwa_usd, :capital_available_usd,
     :acquisition_signal, :recommended_apr, :recommended_credit_limit,
-    :scenario_name, :model_version_valuation, :policy_version
+    :scenario_name, :model_version_valuation, :policy_version,
+    :naics_2d, :borrower_state, :loan_amount
 )
 """
 
@@ -146,7 +151,8 @@ INSERT INTO audit_log (
     ftp_rate_bps, rwa_usd, capital_available_usd,
     acquisition_signal, recommended_apr, recommended_credit_limit,
     scenario_name, model_version_valuation, policy_version,
-    record_hash, previous_hash, hash_algorithm
+    record_hash, previous_hash, hash_algorithm,
+    naics_2d, borrower_state, loan_amount
 ) VALUES (
     :log_id, :tenant_id, :application_id, :logged_at, :input_features,
     :model_version, :feature_version,
@@ -156,7 +162,8 @@ INSERT INTO audit_log (
     :ftp_rate_bps, :rwa_usd, :capital_available_usd,
     :acquisition_signal, :recommended_apr, :recommended_credit_limit,
     :scenario_name, :model_version_valuation, :policy_version,
-    :record_hash, :previous_hash, :hash_algorithm
+    :record_hash, :previous_hash, :hash_algorithm,
+    :naics_2d, :borrower_state, :loan_amount
 )
 """
 
@@ -337,6 +344,9 @@ async def log_decision(
     input_features: Dict[str, Any],
     db_url: str,
     tenant_id: str,
+    naics_2d: Optional[str] = None,
+    borrower_state: Optional[str] = None,
+    loan_amount: Optional[float] = None,
 ) -> str:
     """Persist a decision audit record and return the generated ``log_id``.
 
@@ -432,6 +442,9 @@ async def log_decision(
             "scenario_name":            dr_dict.get("scenario_name"),
             "model_version_valuation":  dr_dict.get("model_version_valuation"),
             "policy_version":           dr_dict.get("policy_version"),
+            "naics_2d":                 naics_2d,
+            "borrower_state":           borrower_state,
+            "loan_amount":              loan_amount,
         }
 
         # Build canonical payload for hash chain (keys sorted alphabetically)

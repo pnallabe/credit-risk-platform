@@ -55,6 +55,7 @@ export interface DecisionResponse {
   audit_log_id: string;
   fraud_probability: number;
   pd_score: number;
+  alternatives?: any[];
 }
 
 export interface AuditRecord {

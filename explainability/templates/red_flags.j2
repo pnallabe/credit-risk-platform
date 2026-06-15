@@ -1,0 +1,4 @@
+{% if red_flags %}The following risk concerns were identified during qualitative review:
+
+{% for flag in red_flags %}- **[{{ flag.severity }}] {{ flag.flag_type }}**: {{ flag.description }}
+{% endfor %}{% endif %}

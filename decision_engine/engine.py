@@ -52,6 +52,7 @@ DECISION_APPROVE = "APPROVE"
 DECISION_REJECT = "REJECT"
 DECISION_MANUAL_REVIEW = "MANUAL_REVIEW"
 DECISION_CONDITIONAL = "CONDITIONAL"
+DECISION_CONDITIONAL_APPROVE = "CONDITIONAL_APPROVE"
 #: Conditional approval — terms are stored in DecisionResult.conditional_terms.
 
 #: Mapping of FCRA adverse action codes to their human-readable descriptions.
@@ -116,6 +117,17 @@ class ConditionalTerms:
     co_signer_required: bool = False             # True if co-signer required
     rate_premium_pct: Optional[float] = None     # additional rate premium (%)
     additional_conditions: Optional[str] = None  # free-text
+
+@dataclass
+class Condition:
+    code: str
+    description: str
+    required_by_days: int
+
+@dataclass
+class ConditionalApproval:
+    conditions: List[Condition]
+    condition_deadline_days: int = 30
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +197,9 @@ class DecisionRequest:
     num_open_accounts: int
     annual_income: Optional[float] = None
     ocr_confidence: Optional[float] = None
+    employment_status: str = "employed"
+    thin_file: bool = False
+    collateral_ltv: Optional[float] = None
 
 
 @dataclass
@@ -227,6 +242,8 @@ class DecisionResult:
     conditions: List[Any] = field(default_factory=list)
     # S4-A: Alternative structures for declined applications
     alternative_structures: List[Any] = field(default_factory=list)
+    # Prompt 11
+    conditional_approval: Optional[ConditionalApproval] = None
 
 
 # ---------------------------------------------------------------------------
@@ -458,53 +475,43 @@ def make_decision(
         decision = DECISION_REJECT
 
     # ------------------------------------------------------------------
-    # S4-A — Post-decision Conditional Approval check
+    # Prompt 11 — Post-decision Conditional Approval check
     # ------------------------------------------------------------------
-    # If pd_score <= 0.10 (risk-acceptable) but soft conditions fire,
-    # downgrade APPROVE to CONDITIONAL.
-    # Fraud/MANUAL_REVIEW decisions are never overridden.
-    # ------------------------------------------------------------------
-    if decision == DECISION_APPROVE and credit.pd_score <= 0.10:
-        _features = getattr(request, "features", {}) or {}
-        _income_verified = bool(_features.get("income_verified", True))
-        _dti = request.debt_to_income_ratio
-        _num_open = request.num_open_accounts
-        _collateral_coverage = float(_features.get("collateral_coverage_ratio", 0.0))
-        _has_collateral = bool(_features.get("collateral_value"))
+    conditional_approval_obj = None
+    if decision == DECISION_APPROVE and (0.05 <= credit.pd_score <= 0.12):
+        _conds = []
 
-        _early_conditions: List[Any] = []
-        try:
-            from decision_engine.conditions import Condition
-            if not _income_verified:
-                _early_conditions.append(Condition(
-                    condition_type="INCOME_VERIFICATION_REQUIRED",
-                    description="Income has not been verified. Verification required before funding.",
-                ))
-            if 0.43 <= _dti <= 0.50:
-                _early_conditions.append(Condition(
-                    condition_type="REDUCED_LIMIT",
-                    description=f"DTI of {_dti:.2f} is elevated. Reduced credit limit recommended.",
-                ))
-            if _has_collateral and 0 < _collateral_coverage < 1.0:
-                _early_conditions.append(Condition(
-                    condition_type="COLLATERAL_REQUIRED",
-                    description=(
-                        f"Collateral coverage ratio of {_collateral_coverage:.2f} is below 1.0. "
-                        "Additional collateral or appraisal required."
-                    ),
-                    min_coverage_ratio=1.0,
-                ))
-            if _num_open < 3:
-                _early_conditions.append(Condition(
-                    condition_type="ADDITIONAL_DOCUMENTATION",
-                    description="Thin credit file (fewer than 3 open trades). Additional documentation required.",
-                    doc_types=["bank_statements", "alternative_credit_data"],
-                ))
-        except ImportError:
-            pass
+        if request.debt_to_income_ratio > 0.45:
+            _conds.append(Condition(
+                code="INCOME_VERIFY",
+                description="Debt-to-income ratio exceeds 45%. Please provide recent pay stubs or tax returns to verify income.",
+                required_by_days=30
+            ))
 
-        if _early_conditions:
-            decision = DECISION_CONDITIONAL
+        if request.thin_file or request.num_open_accounts < 3:
+            _conds.append(Condition(
+                code="CREDIT_HISTORY_VERIFY",
+                description="Insufficient credit history. Provide alternative credit data or a co-borrower.",
+                required_by_days=30
+            ))
+
+        if request.employment_status != "employed":
+            _conds.append(Condition(
+                code="EMPLOYMENT_VERIFY",
+                description="Self-employed or non-standard employment. Please provide additional employment verification.",
+                required_by_days=30
+            ))
+
+        if getattr(request, "collateral_ltv", None) is not None and request.collateral_ltv > 0.85:
+            _conds.append(Condition(
+                code="COLLATERAL_VERIFY",
+                description="Collateral LTV exceeds 85%. Provide an updated appraisal or increase down payment.",
+                required_by_days=30
+            ))
+
+        if _conds:
+            decision = DECISION_CONDITIONAL_APPROVE
+            conditional_approval_obj = ConditionalApproval(conditions=_conds, condition_deadline_days=30)
 
     # Apply OCR confidence check to override approvals/conditional approvals
     ocr_conf = getattr(request, "ocr_confidence", None)
@@ -513,9 +520,9 @@ def make_decision(
             decision = DECISION_MANUAL_REVIEW
 
     # ------------------------------------------------------------------
-    # Step 2 — Build loan terms (only meaningful for APPROVE)
+    # Step 2 — Build loan terms (meaningful for APPROVE and CONDITIONAL_APPROVE)
     # ------------------------------------------------------------------
-    if decision == DECISION_APPROVE:
+    if decision in (DECISION_APPROVE, DECISION_CONDITIONAL_APPROVE):
         rate = pricing.recommended_rate
         monthly = _monthly_payment(request.loan_amount, rate, request.loan_term_months)
         loan_terms: Dict = {
@@ -550,25 +557,7 @@ def make_decision(
     elapsed_ms = int((time.perf_counter_ns() - start_ns) / 1_000_000)
     decision_timestamp = datetime.now(tz=timezone.utc)
 
-    # S4-A — Generate alternative structures for pure rejections
-    _alt_structures: List[Any] = []
-    if decision == DECISION_REJECT:
-        try:
-            from decision_engine.alternative_structures import generate_alternatives
-            _alt_structures = generate_alternatives(
-                request=request,
-                pd_score=credit.pd_score,
-                decision=decision,
-            )
-        except Exception as _alt_exc:
-            log.warning("Alternative structures generation failed (non-fatal): %s", _alt_exc)
-
-    # S4-A — conditions populated during conditional approval path
-    # _early_conditions was built above if decision == CONDITIONAL;
-    # fall back to empty list otherwise.
-    _conditions: List[Any] = locals().get("_early_conditions", [])
-
-    return DecisionResult(
+    result = DecisionResult(
         application_id=request.application_id,
         decision=decision,
         recommended_rate=recommended_rate,
@@ -577,9 +566,25 @@ def make_decision(
         decision_timestamp=decision_timestamp,
         decision_latency_ms=elapsed_ms,
         override_records=_override_records,
-        conditions=_conditions,
-        alternative_structures=_alt_structures,
+        conditional_approval=conditional_approval_obj,
+        alternative_structures=[],
     )
+
+    if decision == DECISION_REJECT:
+        try:
+            from decision_engine.alternative_structures import compute_alternatives
+            # Fetch policy config
+            _cfg = _POLICY_REGISTRY.get_config(request.tenant_id)
+            _alt_structures = compute_alternatives(
+                request=request,
+                decision_result=result,
+                policy_config=_cfg,
+            )
+            result.alternative_structures = _alt_structures
+        except Exception as _alt_exc:
+            logger.warning("Failed to generate alternatives: %s", _alt_exc)
+
+    return result
 
 
 # ---------------------------------------------------------------------------

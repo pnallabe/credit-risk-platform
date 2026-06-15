@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS agent_code_artifacts (
     content_hash   TEXT    NOT NULL,
     source_table   TEXT,
     partition_date TEXT,
-    created_at     TEXT    NOT NULL
+    created_at     TEXT    NOT NULL,
+    tenant_id      TEXT    NOT NULL DEFAULT 'default'
 )
 """
 
@@ -82,6 +83,7 @@ class CodeArtifact:
     source_table: Optional[str]
     partition_date: Optional[str]
     created_at: str
+    tenant_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +116,7 @@ def _mapping_to_artifact(row) -> CodeArtifact:
         source_table=row["source_table"],
         partition_date=row["partition_date"],
         created_at=row["created_at"],
+        tenant_id=row.get("tenant_id", "default"),
     )
 
 
@@ -126,6 +129,7 @@ async def store_artifact(
     turn_id: str,
     artifact_type: Literal["sql", "python"],
     content: str,
+    tenant_id: str,
     source_table: Optional[str] = None,
     partition_date: Optional[str] = None,
 ) -> CodeArtifact:
@@ -151,17 +155,17 @@ async def store_artifact(
             _sa_text("""
                 INSERT INTO agent_code_artifacts
                     (artifact_id, session_id, turn_id, artifact_type, content,
-                     content_hash, source_table, partition_date, created_at)
+                     content_hash, source_table, partition_date, created_at, tenant_id)
                 VALUES
                     (:artifact_id, :session_id, :turn_id, :artifact_type, :content,
-                     :content_hash, :source_table, :partition_date, :created_at)
+                     :content_hash, :source_table, :partition_date, :created_at, :tenant_id)
             """),
             {
                 "artifact_id": artifact_id, "session_id": session_id,
                 "turn_id": turn_id, "artifact_type": artifact_type,
                 "content": content, "content_hash": content_hash,
                 "source_table": source_table, "partition_date": partition_date,
-                "created_at": created_at,
+                "created_at": created_at, "tenant_id": tenant_id,
             },
         )
 
@@ -175,6 +179,7 @@ async def store_artifact(
         source_table=source_table,
         partition_date=partition_date,
         created_at=created_at,
+        tenant_id=tenant_id,
     )
 
 
@@ -226,5 +231,41 @@ async def get_artifacts_for_session(
 
     async with engine.connect() as conn:
         result = await conn.execute(_sa_text(sql), params)
+        rows = result.mappings().all()
+    return [_mapping_to_artifact(r) for r in rows]
+
+
+async def get_artifact(
+    db_url: str,
+    artifact_id: str,
+) -> Optional[CodeArtifact]:
+    """Return a single artifact by artifact_id or None if not found."""
+    await _ensure_schema(db_url)
+    engine = _get_engine(db_url)
+    async with engine.connect() as conn:
+        result = await conn.execute(
+            _sa_text("SELECT * FROM agent_code_artifacts WHERE artifact_id = :artifact_id"),
+            {"artifact_id": artifact_id},
+        )
+        row = result.mappings().first()
+    return _mapping_to_artifact(row) if row else None
+
+
+async def get_artifact_history(
+    db_url: str,
+    session_id: str,
+    tenant_id: str,
+) -> list[CodeArtifact]:
+    """Return all artifacts for a session ordered by created_at ASC."""
+    await _ensure_schema(db_url)
+    engine = _get_engine(db_url)
+
+    sql = (
+        "SELECT * FROM agent_code_artifacts WHERE session_id = :session_id AND tenant_id = :tenant_id "
+        "ORDER BY created_at ASC"
+    )
+
+    async with engine.connect() as conn:
+        result = await conn.execute(_sa_text(sql), {"session_id": session_id, "tenant_id": tenant_id})
         rows = result.mappings().all()
     return [_mapping_to_artifact(r) for r in rows]

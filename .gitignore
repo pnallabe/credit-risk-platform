@@ -147,3 +147,7 @@ stress_test_results.db
 webhooks.db
 batch_jobs.db
 .venv311/
+test-results/
+playwright-report/
+mlruns/
+.firebase/

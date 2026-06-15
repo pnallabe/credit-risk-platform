@@ -127,14 +127,22 @@ def compute_confidence(factors: ConfidenceFactors) -> ConfidenceScore:
 # ---------------------------------------------------------------------------
 # Grounding gate
 # ---------------------------------------------------------------------------
-def should_refuse(score: ConfidenceScore) -> bool:
+def should_refuse(score: ConfidenceScore, *, threshold: float = 0.10) -> bool:
     """
     Return True when the label is "none" OR when empty_result is True
-    AND score.score < 0.10.
+    AND score.score < threshold.
+
+    Strict grounding gate: if row_count == 0 AND has_sql_artifact is False
+    AND query_error is False, refuse unconditionally.
     """
+    f = score.factors
+    # Strict grounding gate
+    if f.row_count == 0 and not f.has_sql_artifact and not f.query_error:
+        return True
+
     if score.label == "none":
         return True
-    if score.factors.empty_result and score.score < 0.10:
+    if f.empty_result and score.score < threshold:
         return True
     return False
 

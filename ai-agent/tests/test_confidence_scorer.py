@@ -90,3 +90,21 @@ def test_should_not_refuse_on_high_confidence():
 def test_refusal_message_is_non_empty_string():
     assert isinstance(REFUSAL_MESSAGE, str)
     assert len(REFUSAL_MESSAGE) > 20
+
+
+def test_should_refuse_configurable_threshold_passes():
+    factors = _make_factors(empty_result=True, has_sql_artifact=True)
+    conf = ConfidenceScore(score=0.08, label="low", factors=factors, explanation="")
+    assert should_refuse(conf, threshold=0.05) is False
+
+
+def test_should_refuse_configurable_threshold_refuses():
+    factors = _make_factors(empty_result=True, has_sql_artifact=True)
+    conf = ConfidenceScore(score=0.25, label="low", factors=factors, explanation="")
+    assert should_refuse(conf, threshold=0.30) is True
+
+
+def test_strict_grounding_gate():
+    factors = _make_factors(row_count=0, has_sql_artifact=False, query_error=False, empty_result=True)
+    conf = ConfidenceScore(score=0.50, label="medium", factors=factors, explanation="")
+    assert should_refuse(conf, threshold=0.10) is True

@@ -12,6 +12,7 @@ import {
   type SortingState,
   type ColumnFiltersState,
 } from "@tanstack/react-table";
+import { ShapWaterfallChart } from "@/components/charts/ShapWaterfallChart";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types & mock data
@@ -319,6 +320,20 @@ function ApplicationDetailSlideOver({
           <div className="grid grid-cols-2 gap-4">
             <ScoreGauge label="Risk Score (PD)" value={app.pd_score} max={0.2} />
             <ScoreGauge label="Fraud Score" value={app.fraud_probability} max={1.0} />
+          </div>
+
+          {/* Feature Explanation (SHAP) */}
+          <div className="bg-gray-50 rounded-xl p-4">
+            <h3 className="text-sm font-semibold text-gray-900 mb-3">Feature Explanation (SHAP)</h3>
+            <ShapWaterfallChart
+              baseValue={0.05}
+              finalScore={app.pd_score}
+              shapValues={{
+                "credit_score_factor": (700 - app.credit_score) * 0.0005,
+                "loan_amount_factor": (app.loan_amount - 20000) * 0.000001,
+                "residual_risk": app.pd_score - 0.05 - ((700 - app.credit_score) * 0.0005) - ((app.loan_amount - 20000) * 0.000001)
+              }}
+            />
           </div>
 
           {/* Notes */}

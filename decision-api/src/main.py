@@ -55,7 +55,7 @@ from middleware.idempotency import IdempotencyMiddleware  # noqa: E402
 from middleware.rate_limit import RateLimitMiddleware  # noqa: E402
 
 # Make project root importable
-ROOT = Path(__file__).parents[3]
+ROOT = Path(__file__).parents[2]
 sys.path.insert(0, str(ROOT))
 _INGESTION_SRC_DIR = _project_root / "ingestion-api" / "src"
 if _INGESTION_SRC_DIR.exists():
@@ -699,7 +699,27 @@ class LoanApplicationRequest(BaseModel):
         le=1.0,
         description="OCR confidence score from document ingestion.",
     )
+    naics_2d: Optional[str] = Field(
+        default=None,
+        description="SIC/NAICS 2-digit code for the borrower's industry.",
+    )
 
+
+class Condition(BaseModel):
+    code: str
+    description: str
+    required_by_days: int
+
+class ConditionalApproval(BaseModel):
+    conditions: List[Condition]
+    condition_deadline_days: int = 30
+
+class AlternativeStructureModel(BaseModel):
+    structure_type: str
+    description: str
+    adjusted_pd: float
+    adjusted_dti: float
+    feasibility: str
 
 class ExplanationFactor(BaseModel):
     feature: str
@@ -720,6 +740,11 @@ class DecisionResponse(BaseModel):
     audit_log_id: str
     fraud_probability: float
     pd_score: float
+    pd_lower: Optional[float] = None
+    pd_upper: Optional[float] = None
+    risk_score_lower: Optional[int] = None
+    risk_score_upper: Optional[int] = None
+    ci_level: Optional[float] = 0.90
     notice_id: Optional[str] = None  # P2-E: populated for REJECT decisions
     # G06: NLG narratives
     explanation_narrative: Optional[str] = None
@@ -729,9 +754,15 @@ class DecisionResponse(BaseModel):
     # S1: Qualitative credit analysis (CreditAnalystAgent)
     qualitative_assessment: Optional[Dict[str, Any]] = None
     risk_narrative_markdown: Optional[str] = None
+    credit_opinion: Optional[str] = None
+    red_flags: Optional[List[Dict[str, Any]]] = None
+    # Prompt 11: Conditional approval logic
+    conditional_approval: Optional[ConditionalApproval] = None
     # S4-A: Conditional approval conditions and alternative structures
     conditions: Optional[List[Dict[str, Any]]] = None
     alternative_structures: Optional[List[Dict[str, Any]]] = None
+    # Prompt 12: Alternatives
+    alternatives: Optional[List[AlternativeStructureModel]] = []
 
 
 class BatchSummary(BaseModel):
@@ -882,6 +913,9 @@ async def _run_pipeline(
     pd_score = float(credit_df["pd_score"].iloc[0])
     pd_band = str(credit_df["pd_band"].iloc[0])
 
+    from models.credit_risk.predict import predict_pd_with_interval
+    pd_pred = predict_pd_with_interval(features_df, _model=_risk_model)
+
     # 4. Pricing (CRIT-05: pass borrower_state so state APR cap is applied)
     pricing_result = calculate_pricing(
         pd_score=pd_score,
@@ -993,6 +1027,9 @@ async def _run_pipeline(
         input_features=input_features_dict,
         db_url=DB_URL,
         tenant_id=tenant_id,
+        naics_2d=getattr(app_req, "naics_2d", None),
+        borrower_state=app_req.borrower_state,
+        loan_amount=float(app_req.loan_amount),
     )
 
     # GAP-02: Persist any policy override records that were collected during the decision
@@ -1061,6 +1098,11 @@ async def _run_pipeline(
         audit_log_id=audit_log_id,
         fraud_probability=fraud_prob,
         pd_score=pd_score,
+        pd_lower=pd_pred.pd_lower,
+        pd_upper=pd_pred.pd_upper,
+        risk_score_lower=pd_pred.risk_score_lower,
+        risk_score_upper=pd_pred.risk_score_upper,
+        ci_level=pd_pred.ci_level,
         notice_id=notice_id,
         # G06: NLG narratives
         explanation_narrative=nlg_loan_officer_narrative or None,
@@ -1070,6 +1112,10 @@ async def _run_pipeline(
         # S1: Qualitative credit analysis
         qualitative_assessment=None,   # populated by pipeline path; N/A for direct /v1/decide
         risk_narrative_markdown=None,
+        credit_opinion=None,
+        red_flags=None,
+        conditional_approval=__import__('dataclasses').asdict(result.conditional_approval) if getattr(result, "conditional_approval", None) else None,
+        alternatives=[__import__('dataclasses').asdict(a) for a in getattr(result, "alternative_structures", [])] if getattr(result, "alternative_structures", []) else [],
     )
 
     # G16-B: Fire-and-forget webhook dispatch (never blocks response).
@@ -1281,10 +1327,11 @@ async def create_decision(
     """Execute the full underwriting pipeline and return a decision."""
     tenant_id: str = _user["tenant_id"]
     response = await _run_pipeline(application, tenant_id=tenant_id)
-    if response.decision == "MANUAL_REVIEW":
+    if response.decision in ("MANUAL_REVIEW", "CONDITIONAL_APPROVE"):
         # GAP-23: persist routine to referral queue for loan officer action
         try:
             from referral_store import create_referral  # noqa: PLC0415
+            ref_status = "CONDITIONS_PENDING" if response.decision == "CONDITIONAL_APPROVE" else "pending"
             await create_referral(
                 db_url=_REFERRAL_DB_URL,
                 application_id=application.application_id,
@@ -1292,11 +1339,14 @@ async def create_decision(
                 audit_log_id=response.audit_log_id,
                 pd_score=response.pd_score,
                 fraud_probability=response.fraud_probability,
+                status=ref_status,
             )
         except Exception as _ref_exc:
             logger.warning("Failed to create referral entry: %s", _ref_exc)
-        # Return 202 Accepted for manual review — requires custom response
-        return JSONResponse(content=response.model_dump(), status_code=202)
+
+        if response.decision == "MANUAL_REVIEW":
+            # Return 202 Accepted for manual review — requires custom response
+            return JSONResponse(content=response.model_dump(), status_code=202)
     return response
 
 
@@ -1491,6 +1541,15 @@ async def get_decision_explanation(
     # 1. SHAP factors already stored in audit record
     stored_shap = record.get("explanation") or []
 
+    # Extract features for CF and CI
+    raw_features = {
+        k: v for k, v in record.items()
+        if k not in {"application_id", "decision", "tenant_id",
+                      "audit_log_id", "logged_at", "chain_integrity",
+                      "explanation"}
+        and isinstance(v, (int, float))
+    }
+
     # 2. Counterfactual (best-effort)
     counterfactual: Dict[str, Any] = {}
     if record.get("decision") == "REJECT":
@@ -1498,13 +1557,6 @@ async def get_decision_explanation(
             from explainability.counterfactual import generate_counterfactual  # noqa: PLC0415
             import pandas as _pd  # noqa: PLC0415
 
-            raw_features = {
-                k: v for k, v in record.items()
-                if k not in {"application_id", "decision", "tenant_id",
-                              "audit_log_id", "logged_at", "chain_integrity",
-                              "explanation"}
-                and isinstance(v, (int, float))
-            }
             if raw_features:
                 feat_df = _pd.DataFrame([raw_features])
                 cf_result = generate_counterfactual(
@@ -1555,12 +1607,71 @@ async def get_decision_explanation(
     except Exception as _nlg_exc:
         logger.warning("NLG narrative failed in explanation endpoint: %s", _nlg_exc)
 
+    # 4. Recompute Risk Score Confidence Interval (Prompt 9)
+    pd_interval_dict = {}
+    if _risk_model is not None and raw_features:
+        try:
+            from models.credit_risk.predict import predict_pd_with_interval
+            import pandas as _pd
+            feat_df = _pd.DataFrame([raw_features])
+            for col in FEATURE_CONFIG.feature_list:
+                if col not in feat_df.columns:
+                    feat_df[col] = 0.0
+            pd_pred = predict_pd_with_interval(feat_df, _model=_risk_model)
+            pd_interval_dict = {
+                "pd_lower": pd_pred.pd_lower,
+                "pd_upper": pd_pred.pd_upper,
+                "risk_score_lower": pd_pred.risk_score_lower,
+                "risk_score_upper": pd_pred.risk_score_upper,
+                "ci_level": pd_pred.ci_level,
+            }
+        except Exception as _ci_exc:
+            logger.warning("CI recomputation failed: %s", _ci_exc)
+
+    # 5. Risk Narrative Document (Prompt 10)
+    risk_narrative_doc = None
+    if _risk_model is not None and raw_features:
+        try:
+            from explainability.risk_narrative_generator import generate_risk_narrative
+            from agents.credit_analyst_agent import CreditAnalystAgent
+
+            # Run CreditAnalystAgent to get the qualitative assessment
+            ca_agent = CreditAnalystAgent()
+            ca_result = ca_agent.execute({
+                "feature_vector": raw_features,
+                "model_scores": {
+                    "fraud_probability": record.get("fraud_probability", 0.0),
+                    "pd_score": record.get("pd_score", 0.0)
+                },
+                "loan_amount": record.get("loan_amount", 0.0)
+            })
+
+            if ca_result.ok and ca_result.payload.get("qualitative_assessment"):
+                # Extract SHAP top factors if available
+                shap_factors = [(f.get("feature", ""), f.get("shap_value", 0.0)) for f in stored_shap]
+
+                narrative_doc = generate_risk_narrative(
+                    account_id=application_id,
+                    features=raw_features,
+                    assessment=ca_result.payload.get("qualitative_assessment"),
+                    model_scores={
+                        "pd_score": record.get("pd_score", 0.0)
+                    },
+                    shap_top_factors=shap_factors
+                )
+                risk_narrative_doc = narrative_doc.dict()
+        except Exception as _rn_exc:
+            logger.warning("Risk narrative generation failed: %s", _rn_exc)
+
     return {
         "application_id": application_id,
         "decision": record.get("decision"),
         "shap": stored_shap,
         "counterfactual": counterfactual,
         "narrative": narrative,
+        "confidence_interval": pd_interval_dict,
+        "risk_narrative_document": risk_narrative_doc,
+        "alternatives": record.get("alternatives", record.get("alternative_structures", [])),
     }
 
 
@@ -2422,7 +2533,7 @@ async def get_model_scorecard(model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 @app.get("/v1/portfolio/concentration", summary="Portfolio concentration report")
-async def get_portfolio_concentration() -> Dict[str, Any]:
+async def get_portfolio_concentration(_user: Dict = Depends(verify_bearer)) -> Dict[str, Any]:
     """Compute portfolio concentration from the last 90 days of decisions."""
     import dataclasses
     from monitoring.concentration_monitor import ConcentrationMonitor
@@ -2431,7 +2542,7 @@ async def get_portfolio_concentration() -> Dict[str, Any]:
     monitor = ConcentrationMonitor(alert_router=AlertRouter())
     # Build a synthetic decisions_df from audit DB (or return empty report if unavailable)
     try:
-        decisions_df = await _load_decisions_df(days=90)
+        decisions_df = await _load_decisions_df(tenant_id=_user.get("tenant_id", ""), days=90)
     except Exception as _e:
         logger.warning("Could not load decisions for concentration report: %s", _e)
         return {"error": "No decision data available", "details": str(_e)}
@@ -2451,13 +2562,13 @@ async def get_portfolio_concentration() -> Dict[str, Any]:
 
 
 @app.get("/v1/portfolio/snapshot", summary="Portfolio snapshot")
-async def get_portfolio_snapshot() -> Dict[str, Any]:
+async def get_portfolio_snapshot(_user: Dict = Depends(verify_bearer)) -> Dict[str, Any]:
     """Compute portfolio snapshot from the last 90 days of decisions."""
     import dataclasses
     from monitoring.portfolio_snapshot import compute_snapshot
 
     try:
-        decisions_df = await _load_decisions_df(days=90)
+        decisions_df = await _load_decisions_df(tenant_id=_user.get("tenant_id", ""), days=90)
     except Exception as _e:
         logger.warning("Could not load decisions for snapshot: %s", _e)
         return {"error": "No decision data available", "details": str(_e)}
@@ -2477,7 +2588,7 @@ async def get_portfolio_snapshot() -> Dict[str, Any]:
 
 
 @app.get("/v1/portfolio/rebalancing", summary="Portfolio rebalancing recommendations")
-async def get_portfolio_rebalancing() -> Dict[str, Any]:
+async def get_portfolio_rebalancing(_user: Dict = Depends(verify_bearer)) -> Dict[str, Any]:
     """Generate portfolio rebalancing plan from concentration and snapshot data."""
     import dataclasses
     from monitoring.concentration_monitor import ConcentrationMonitor
@@ -2486,7 +2597,7 @@ async def get_portfolio_rebalancing() -> Dict[str, Any]:
     from agents.portfolio_construction_agent import PortfolioConstructionAgent
 
     try:
-        decisions_df = await _load_decisions_df(days=90)
+        decisions_df = await _load_decisions_df(tenant_id=_user.get("tenant_id", ""), days=90)
     except Exception as _e:
         logger.warning("Could not load decisions for rebalancing: %s", _e)
         return {"error": "No decision data available", "details": str(_e)}
@@ -2513,7 +2624,7 @@ async def get_portfolio_rebalancing() -> Dict[str, Any]:
 
 
 @app.get("/v1/portfolio/heatmap", summary="Portfolio concentration heatmap data")
-async def get_portfolio_heatmap(dimension: str = "sector") -> List[Dict[str, Any]]:
+async def get_portfolio_heatmap(dimension: str = "sector", _user: Dict = Depends(verify_bearer)) -> List[Dict[str, Any]]:
     """Return concentration heatmap data for a given dimension.
 
     Returns list of { label, value, pct_of_total, status }.
@@ -2521,7 +2632,7 @@ async def get_portfolio_heatmap(dimension: str = "sector") -> List[Dict[str, Any
     from monitoring.concentration_monitor import ConcentrationMonitor, DEFAULT_LIMITS
 
     try:
-        decisions_df = await _load_decisions_df(days=90)
+        decisions_df = await _load_decisions_df(tenant_id=_user.get("tenant_id", ""), days=90)
     except Exception as _e:
         logger.warning("Could not load decisions for heatmap: %s", _e)
         return []
@@ -2554,48 +2665,86 @@ async def get_portfolio_heatmap(dimension: str = "sector") -> List[Dict[str, Any
     return rows
 
 
-async def _load_decisions_df(days: int = 90) -> "pd.DataFrame":
+async def _load_decisions_df(tenant_id: str, days: int = 90) -> "pd.DataFrame":
     """Load recent decisions from audit DB and return as DataFrame.
-
-    Falls back to a synthetic DataFrame if the DB is unavailable.
     """
     import numpy as np
 
     # Try audit DB
     try:
-        from audit.logger import get_audit_record
+        from audit.logger import _get_engine
+        from sqlalchemy import text
         import datetime as _dt
         cutoff = (_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days)).isoformat()
-        # Build a minimal decisions_df — audit DB may not have all fields needed
-        # so we return synthetic data as fallback for robustness
-    except ImportError:
-        pass
 
-    # Synthetic fallback so endpoints never 500 in dev
-    rng = np.random.default_rng(42)
-    n = 200
-    naics_codes = ["44", "52", "53", "54", "72", "23", "62", "31"]
-    states = ["CA", "TX", "FL", "NY", "IL", "OH", "PA", "WA"]
-    risk_grades = ["Prime", "Near-Prime", "Subprime", "Deep-Subprime"]
-    products = ["credit_card", "personal_loan", "mortgage", "smb_loan"]
-    decisions = rng.choice(["APPROVE", "REJECT", "MANUAL_REVIEW"], size=n, p=[0.6, 0.3, 0.1])
+        engine = _get_engine(DB_URL)
+        async with engine.connect() as conn:
+            query = text("""
+                SELECT
+                    application_id as account_id,
+                    decision,
+                    risk_score,
+                    fraud_score as lgd_score,
+                    loan_amount as exposure,
+                    naics_2d,
+                    borrower_state as state,
+                    logged_at as originated_at
+                FROM audit_log
+                WHERE tenant_id = :tenant_id AND logged_at >= :cutoff
+            """)
+            result = await conn.execute(query, {"tenant_id": tenant_id, "cutoff": cutoff})
+            rows = result.mappings().fetchall()
 
-    df = pd.DataFrame({
-        "account_id": [f"ACC-{i:05d}" for i in range(n)],
-        "decision": decisions,
-        "pd_score": rng.beta(2, 20, size=n),
-        "lgd_score": rng.beta(3, 7, size=n),
-        "exposure": rng.lognormal(10, 1, size=n),
-        "naics_2d": rng.choice(naics_codes, size=n),
-        "state": rng.choice(states, size=n),
-        "risk_grade": rng.choice(risk_grades, size=n, p=[0.5, 0.3, 0.15, 0.05]),
-        "product_type": rng.choice(products, size=n),
-        "originated_at": pd.date_range(end=pd.Timestamp.utcnow(), periods=n, freq="10h").strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "dpd_30": rng.choice([True, False], size=n, p=[0.05, 0.95]),
-        "dpd_60": rng.choice([True, False], size=n, p=[0.02, 0.98]),
-        "dpd_90": rng.choice([True, False], size=n, p=[0.01, 0.99]),
-    })
-    return df
+        records = []
+        for r in rows:
+            rec = dict(r)
+            rec["exposure"] = rec.get("exposure") if rec.get("exposure") is not None else 25000.0
+            rec["naics_2d"] = rec.get("naics_2d") if rec.get("naics_2d") is not None else "99"
+            rec["state"] = rec.get("state") if rec.get("state") is not None else "XX"
+            rec["product_type"] = "personal_loan"
+
+            # Risk grade
+            rs = rec.get("risk_score") or 0.0
+            if rs <= 1.0:
+                # Convert PD (0.0 - 1.0) to a 0-100 score for grading purposes (lower PD = higher score)
+                # Just a heuristic to fit the 0-100 band. Let's invert the risk.
+                score_val = (1.0 - rs) * 100
+            else:
+                score_val = rs
+
+            if score_val >= 80:
+                rec["risk_grade"] = "A"
+            elif score_val >= 60:
+                rec["risk_grade"] = "B"
+            elif score_val >= 40:
+                rec["risk_grade"] = "C"
+            elif score_val >= 20:
+                rec["risk_grade"] = "D"
+            else:
+                rec["risk_grade"] = "F"
+
+            rec["pd_score"] = rs
+
+            # Additional defaults
+            rec["dpd_30"] = False
+            rec["dpd_60"] = False
+            rec["dpd_90"] = False
+
+            records.append(rec)
+
+        # Synthetic fallback removed 2026-06-12. Real data only.
+        return pd.DataFrame(records) if records else pd.DataFrame(columns=[
+            "account_id", "decision", "pd_score", "lgd_score", "exposure",
+            "naics_2d", "state", "risk_grade", "product_type", "originated_at",
+            "dpd_30", "dpd_60", "dpd_90"
+        ])
+    except Exception as e:
+        logger.error("Error loading decisions from DB: %s", e)
+        return pd.DataFrame(columns=[
+            "account_id", "decision", "pd_score", "lgd_score", "exposure",
+            "naics_2d", "state", "risk_grade", "product_type", "originated_at",
+            "dpd_30", "dpd_60", "dpd_90"
+        ])
 
 
 # ---------------------------------------------------------------------------

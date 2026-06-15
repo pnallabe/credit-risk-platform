@@ -465,8 +465,7 @@ async def build_ai_agent_audit_component(
         )
         if _ai_src not in _sys.path:
             _sys.path.insert(0, _ai_src)
-        from ai_audit_log import get_ai_audit_records  # noqa: PLC0415
-        from audit.chain_verifier import verify_ai_agent_chain  # noqa: PLC0415
+        from ai_audit_log import get_ai_audit_records, verify_ai_agent_chain  # noqa: PLC0415
 
         records = await get_ai_audit_records(
             db_url=_ai_db,
@@ -506,8 +505,8 @@ async def build_ai_agent_audit_component(
                     pass
 
         # Chain verification
-        chain_result = await verify_ai_agent_chain(_ai_db)
-        chain_status = "verified" if chain_result.verified else "tampered"
+        chain_result = await verify_ai_agent_chain(db_url=_ai_db, session_id=None)
+        chain_status = "verified" if chain_result.is_intact else "tampered"
 
         return ExamPacketComponent(
             name="ai_agent_audit",
@@ -523,9 +522,9 @@ async def build_ai_agent_audit_component(
                 "tools_called_distribution": tools_dist,
                 "chain_verification": {
                     "status": chain_status,
-                    "rows_checked": chain_result.rows_checked,
-                    "gap_detected": chain_result.gap_detected,
-                    "first_tampered_log_id": chain_result.first_tampered_log_id,
+                    "rows_checked": chain_result.total_records,
+                    "gap_detected": not chain_result.is_intact,
+                    "first_tampered_log_id": chain_result.broken_at[0] if chain_result.broken_at else None,
                 },
                 "from_date": spec.from_date,
                 "to_date": spec.to_date,

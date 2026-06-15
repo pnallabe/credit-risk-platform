@@ -31,7 +31,7 @@ from compliance.prohibited_variables import (
 )
 
 from .ai_audit_log import log_ai_turn
-from .code_artifact_store import store_artifact
+from .code_artifact_store import store_artifact, get_artifact
 from .confidence_scorer import (
     ConfidenceFactors,
     ConfidenceScore,
@@ -47,7 +47,9 @@ _ACTIVE_TURN_ID: contextvars.ContextVar[str] = contextvars.ContextVar(
 _TURN_SQL_RESULTS: dict[str, dict] = {}
 _TURN_LOCK = threading.Lock()
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request, Security, BackgroundTasks
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import jwt
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -56,6 +58,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from langchain_openai import ChatOpenAI
+
+from config_registry.service import ConfigRegistryService
+_CONFIG_REGISTRY = ConfigRegistryService()
 
 from .planner_agent import PlannerAgent, AnalysisPlan
 from .specialist_agents import OrchestratorAgent
@@ -482,6 +487,21 @@ class ChatRequest(BaseModel):
     message: str
     persona: str = "data_analyst"
 
+bearer_scheme = HTTPBearer(auto_error=False)
+JWT_SECRET = os.getenv("JWT_SECRET", "your-secret-key-change-in-production")
+JWT_ALGORITHM = "HS256"
+
+async def verify_bearer(credentials: Optional[HTTPAuthorizationCredentials] = Security(bearer_scheme)):
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+    if not payload.get("tenant_id"):
+        raise HTTPException(status_code=401, detail="JWT must include 'tenant_id' claim")
+    return payload
+
 
 # ---------------------------------------------------------------------------
 # Anti-Hallucination Framework schemas (PRD §5)
@@ -515,7 +535,7 @@ class AgentTurnMetadata(BaseModel):
 # ---------------------------------------------------------------------------
 # SSE streaming helper
 # ---------------------------------------------------------------------------
-async def _stream_agent_response(session_id: str, message: str, persona: str) -> AsyncGenerator[str, None]:
+async def _stream_agent_response(session_id: str, message: str, persona: str, tenant_id: str = "default") -> AsyncGenerator[str, None]:
     # --- Anti-Hallucination Framework: per-turn setup ---
     turn_id = str(uuid.uuid4())
     token = _ACTIVE_TURN_ID.set(turn_id)
@@ -612,6 +632,11 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
     )
     conf = compute_confidence(factors)
 
+    tenant_cfg = _CONFIG_REGISTRY.resolve(tenant_id, fallback={})
+    threshold = tenant_cfg.get("ai_agent.refusal_threshold", 0.10)
+    if not isinstance(threshold, (int, float)) or not (0.05 <= threshold <= 0.60):
+        threshold = 0.10
+
     # Persist SQL code artifact (fire-and-forget)
     if turn_data.get("sql_executed"):
         try:
@@ -621,6 +646,7 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
                 turn_id=turn_id,
                 artifact_type="sql",
                 content=turn_data["sql_executed"],
+                tenant_id=tenant_id,
                 source_table=turn_data.get("source_table"),
             )
             artifact_ids.append(artifact.artifact_id)
@@ -636,6 +662,7 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
                 turn_id=turn_id,
                 artifact_type="python",
                 content=py_content,
+                tenant_id=tenant_id,
             )
             artifact_ids.append(py_artifact.artifact_id)
         except Exception as exc:
@@ -685,7 +712,7 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
             code_artifact_ids=artifact_ids or None,
             confidence_score=conf.score,
             confidence_label=conf.label,
-            grounded=not should_refuse(conf),
+            grounded=not should_refuse(conf, threshold=threshold),
             source_table=turn_data.get("source_table"),
         ))
     except Exception as exc:
@@ -710,12 +737,12 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
             result_hash=turn_data.get("result_hash") or None,
             artifact_ids=artifact_ids,
         ),
-        grounded=not should_refuse(conf),
+        grounded=not should_refuse(conf, threshold=threshold),
     )
     yield f"data: {json.dumps({'metadata': metadata.model_dump()})}\n\n"
 
     # Grounding gate: emit structured refusal if triggered
-    if should_refuse(conf):
+    if should_refuse(conf, threshold=threshold):
         yield f"data: {json.dumps({'token': REFUSAL_MESSAGE, 'refusal': True})}\n\n"
 
     yield "data: [DONE]\n\n"
@@ -724,14 +751,29 @@ async def _stream_agent_response(session_id: str, message: str, persona: str) ->
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+@app.get("/api/v1/agent/config")
+async def get_agent_config(tenant_id: str = "default"):
+    tenant_cfg = _CONFIG_REGISTRY.resolve(tenant_id, fallback={})
+    threshold = tenant_cfg.get("ai_agent.refusal_threshold")
+    if threshold is not None and isinstance(threshold, (int, float)) and (0.05 <= threshold <= 0.60):
+        return {
+            "refusal_threshold": float(threshold),
+            "source": "tenant_override"
+        }
+    return {
+        "refusal_threshold": 0.10,
+        "source": "default"
+    }
+
+
 @app.get("/health")
 async def health():
     return {"status": "ok", "model": OPENAI_MODEL}
 
 
 @app.post("/agent/sessions", response_model=SessionCreateResponse)
-@limiter.limit(RATE_LIMIT)
-async def create_session(req: SessionCreateRequest, request: Request):
+@limiter.limit("5/minute")
+async def create_session(req: SessionCreateRequest, request: Request, payload: dict = Depends(verify_bearer)):
     session_id = str(uuid.uuid4())
     # Pre-register session so history is available on first turn
     _SESSIONS.setdefault(session_id, {"history": "", "persona": req.persona})
@@ -755,12 +797,13 @@ async def create_session(req: SessionCreateRequest, request: Request):
 
 @app.post("/agent/chat")
 @limiter.limit(RATE_LIMIT)
-async def chat(req: ChatRequest, request: Request):
+async def chat(req: ChatRequest, request: Request, payload: dict = Depends(verify_bearer)):
     if not req.message.strip():
         raise HTTPException(status_code=400, detail="Message cannot be empty.")
+    tenant_id = payload["tenant_id"]
 
     return StreamingResponse(
-        _stream_agent_response(req.session_id, req.message, req.persona),
+        _stream_agent_response(req.session_id, req.message, req.persona, tenant_id=tenant_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -827,7 +870,6 @@ class CodeArtifactItem(BaseModel):
 class AgentQueryRequest(BaseModel):
     session_id: str
     query: str
-    tenant_id: str
     output_format: Literal["json", "pdf", "excel", "both"] = "json"
 
 
@@ -854,7 +896,6 @@ class SessionSummary(BaseModel):
 
 class AuditPackageRequest(BaseModel):
     session_id: str
-    tenant_id: str
 
 
 # ---------------------------------------------------------------------------
@@ -880,29 +921,7 @@ def _get_formatter():
 # Helper: fetch code artifacts for a query_id from artifact store
 # ---------------------------------------------------------------------------
 
-async def _fetch_code_artifacts_for_query(query_id: str) -> list[CodeArtifactItem]:
-    """Return CodeArtifactItem list for a given query_id (uses turn_id as query_id here)."""
-    try:
-        async with _get_async_engine(DATABASE_URL).connect() as conn:
-            result = await conn.execute(
-                _sa_text(
-                    "SELECT artifact_id, artifact_type, content_hash "
-                    "FROM agent_code_artifacts WHERE turn_id = :qid"
-                ),
-                {"qid": query_id},
-            )
-            rows = result.mappings().all()
-        items = []
-        for r in rows:
-            items.append(CodeArtifactItem(
-                artifact_id=r["artifact_id"],
-                kind=r["artifact_type"],
-                uri=f"local://artifacts/{r['artifact_id']}",
-                sha256=r["content_hash"],
-            ))
-        return items
-    except Exception:
-        return []
+
 
 
 # ---------------------------------------------------------------------------
@@ -910,7 +929,9 @@ async def _fetch_code_artifacts_for_query(query_id: str) -> list[CodeArtifactIte
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/agent/query", response_model=AgentQueryResponse)
-async def agent_query_v1(req: AgentQueryRequest):
+@limiter.limit(RATE_LIMIT)
+async def agent_query_v1(req: AgentQueryRequest, request: Request, payload: dict = Depends(verify_bearer)):
+    tenant_id = payload["tenant_id"]
     """
     PRD-compliant multi-agent query pipeline:
     ComplianceGate → Planner → Orchestrator → QueryBuilder →
@@ -920,7 +941,7 @@ async def agent_query_v1(req: AgentQueryRequest):
 
     # Step 1: Compliance gate
     gate = _get_compliance_gate()
-    gate_decision = gate.evaluate(req.query, req.tenant_id)
+    gate_decision = gate.evaluate(req.query, tenant_id)
     gate.log_gate_decision(gate_decision, req.session_id)
 
     if not gate_decision.allowed:
@@ -997,6 +1018,11 @@ async def agent_query_v1(req: AgentQueryRequest):
         )
         conf = compute_confidence(factors)
 
+        tenant_cfg = _CONFIG_REGISTRY.resolve(tenant_id, fallback={})
+        threshold = tenant_cfg.get("ai_agent.refusal_threshold", 0.10)
+        if not isinstance(threshold, (int, float)) or not (0.05 <= threshold <= 0.60):
+            threshold = 0.10
+
         artifact_ids: list[str] = []
         if turn_data.get("sql_executed"):
             try:
@@ -1006,6 +1032,7 @@ async def agent_query_v1(req: AgentQueryRequest):
                     turn_id=turn_id,
                     artifact_type="sql",
                     content=turn_data["sql_executed"],
+                    tenant_id=tenant_id,
                     source_table=turn_data.get("source_table"),
                 )
                 artifact_ids.append(art.artifact_id)
@@ -1020,6 +1047,7 @@ async def agent_query_v1(req: AgentQueryRequest):
                     turn_id=turn_id,
                     artifact_type="python",
                     content=py_content,
+                    tenant_id=tenant_id,
                 )
                 artifact_ids.append(py_art.artifact_id)
             except Exception as exc:
@@ -1043,7 +1071,7 @@ async def agent_query_v1(req: AgentQueryRequest):
                 metadata={
                     "session_id": req.session_id,
                     "query_id": query_id,
-                    "tenant_id": req.tenant_id,
+                    "tenant_id": tenant_id,
                     "timestamp": _dt.now(_tz.utc).isoformat(),
                 },
             )
@@ -1077,8 +1105,8 @@ async def agent_query_v1(req: AgentQueryRequest):
                 code_artifact_ids=artifact_ids or None,
                 confidence_score=conf.score,
                 confidence_label=conf.label,
-                grounded=not should_refuse(conf),
-                tenant_id=req.tenant_id,
+                grounded=not should_refuse(conf, threshold=threshold),
+                tenant_id=tenant_id,
                 code_artifact_uris=artifact_uris or None,
             ))
         except Exception as exc:
@@ -1092,7 +1120,7 @@ async def agent_query_v1(req: AgentQueryRequest):
                     from webhooks.store import WebhookStore
                     store = WebhookStore(db_url=DATABASE_URL)
                     dispatcher = WebhookDispatcher(store=store)
-                    dispatcher.dispatch(req.tenant_id, "agent.answer.ready", {
+                    dispatcher.dispatch(tenant_id, "agent.answer.ready", {
                         "event": "agent.answer.ready",
                         "data": {
                             "session_id": req.session_id,
@@ -1150,7 +1178,7 @@ async def agent_query_v1(req: AgentQueryRequest):
 # ---------------------------------------------------------------------------
 
 @app.get("/api/v1/agent/sessions/{session_id}", response_model=SessionSummary)
-async def get_session_summary_v1(session_id: str):
+async def get_session_summary_v1(session_id: str, payload: dict = Depends(verify_bearer)):
     """Return session summary including turn count, timestamps, and history."""
     try:
         async with _get_async_engine(DATABASE_URL).connect() as conn:
@@ -1194,18 +1222,12 @@ async def get_session_summary_v1(session_id: str):
 # ---------------------------------------------------------------------------
 
 @app.post("/api/v1/agent/audit-package")
-async def create_audit_package_v1(req: AuditPackageRequest):
-    """Return audit package with all AI audit records for a session."""
-    try:
-        from .ai_audit_log import get_ai_audit_records
-        records = await get_ai_audit_records(req.session_id, DATABASE_URL)
-    except Exception as exc:
-        logger.error("Failed to fetch audit records: %s", exc)
-        records = []
-
+async def create_audit_package_v1(req: AuditPackageRequest, payload: dict = Depends(verify_bearer)):
+    tenant_id = payload["tenant_id"]
     return {
+        "status": "pending",
         "session_id": req.session_id,
-        "tenant_id": req.tenant_id,
+        "tenant_id": tenant_id,
         "audit_records": records,
         "generated_at": _dt.now(_tz.utc).isoformat(),
     }
@@ -1215,10 +1237,21 @@ async def create_audit_package_v1(req: AuditPackageRequest):
 # GET /api/v1/agent/query/{query_id}/code-artifacts
 # ---------------------------------------------------------------------------
 
-@app.get("/api/v1/agent/query/{query_id}/code-artifacts", response_model=list[CodeArtifactItem])
-async def get_code_artifacts_v1(query_id: str):
-    """Return all code artifacts stored for query_id (mapped via turn_id)."""
-    return await _fetch_code_artifacts_for_query(query_id)
+@app.get("/api/v1/agent/sessions/{session_id}/code-artifacts", response_model=list[CodeArtifactItem])
+async def get_code_artifacts_v1(session_id: str, payload: dict = Depends(verify_bearer)):
+    """Return all code artifacts stored for the session_id."""
+    tenant_id = payload["tenant_id"]
+    from .code_artifact_store import get_artifact_history
+    artifacts = await get_artifact_history(DATABASE_URL, session_id, tenant_id)
+    items = []
+    for r in artifacts:
+        items.append(CodeArtifactItem(
+            artifact_id=r.artifact_id,
+            kind=r.artifact_type,
+            uri=f"local://artifacts/{r.artifact_id}",
+            sha256=r.content_hash,
+        ))
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -1262,3 +1295,95 @@ async def get_code_archive_v1(query_id: str):
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="code-archive-{query_id}.zip"'},
     )
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/agent/audit/verify-chain
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/agent/audit/verify-chain")
+async def verify_chain(session_id: Optional[str] = None):
+    logger.info("Chain verification requested for session_id=%s (tenant_id=default)", session_id)
+    from .ai_audit_log import verify_ai_agent_chain
+    result = await verify_ai_agent_chain(DATABASE_URL, session_id)
+    return {
+        "is_intact": result.is_intact,
+        "total_records": result.total_records,
+        "verified_records": result.verified_records,
+        "broken_at": result.broken_at
+    }
+
+@app.post("/api/v1/agent/artifacts/{artifact_id}/execute")
+async def execute_artifact(artifact_id: str, request: Request, payload: dict = Depends(verify_bearer)):
+    tenant_id = payload["tenant_id"]
+
+    artifact = await get_artifact(DATABASE_URL, artifact_id)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+
+    if artifact.tenant_id != tenant_id:
+        raise HTTPException(status_code=403, detail="Artifact belongs to another tenant")
+
+    if artifact.artifact_type != "sql":
+        raise HTTPException(status_code=422, detail="Only SQL artifacts can be re-executed. Python execution sandbox is out of scope.")
+
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+    from compliance.prohibited_variables import PROHIBITED_VARIABLES, PROXY_VARIABLE_MAP
+
+    sql_lower = artifact.content.lower()
+    contains_prohibited = any(var in sql_lower for var in PROHIBITED_VARIABLES) or any(var in sql_lower for var in PROXY_VARIABLE_MAP)
+
+    if contains_prohibited:
+        raise HTTPException(status_code=422, detail="Stored SQL contains prohibited variables")
+
+    engine = _get_async_engine(DATABASE_URL)
+
+    async with engine.begin() as conn:
+        res = await conn.execute(
+            _sa_text("SELECT result_hash FROM ai_agent_audit_log WHERE turn_id = :turn_id LIMIT 1"),
+            {"turn_id": artifact.turn_id}
+        )
+        row = res.mappings().first()
+        original_result_hash = row["result_hash"] if row and row["result_hash"] else ""
+
+    async with engine.begin() as conn:
+        try:
+            result = await conn.execute(_sa_text(artifact.content))
+            rows = [dict(r) for r in result.mappings().all()]
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"SQL Execution failed: {e}")
+
+    result_json = json.dumps(rows, default=str, sort_keys=True)
+    reexecution_result_hash = hashlib.sha256(result_json.encode()).hexdigest()
+
+    from .ai_audit_log import log_ai_turn
+    await log_ai_turn(
+        db_url=DATABASE_URL,
+        session_id=artifact.session_id,
+        turn_id=str(uuid.uuid4()),
+        persona="auditor",
+        query_text=f"Re-execute artifact {artifact_id}",
+        answer_text="Re-executed artifact.",
+        plan_steps=[],
+        tools_called=[],
+        sql_executed=artifact.content,
+        result_hash=reexecution_result_hash,
+        query_hash="",
+        code_artifact_ids=[artifact_id],
+        confidence_score=1.0,
+        confidence_label="high",
+        grounded=True,
+        tenant_id=tenant_id
+    )
+
+    return {
+        "artifact_id": artifact_id,
+        "original_result_hash": original_result_hash,
+        "reexecution_result_hash": reexecution_result_hash,
+        "hashes_match": bool(original_result_hash and original_result_hash == reexecution_result_hash),
+        "row_count": len(rows),
+        "executed_at": datetime.utcnow().isoformat(),
+        "rows_preview": rows[:10]
+    }
