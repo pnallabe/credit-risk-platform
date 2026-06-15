@@ -67,6 +67,41 @@ def compute_ead(record: ExposureRecord) -> float:
     return float(ead)
 
 
+def predict_lgd(features: dict, product_type: str) -> Optional[float]:
+    """Predict LGD using the trained model, returning None if missing/failed."""
+    try:
+        from models.model_loader import load_lgd_model
+        model = load_lgd_model()
+        import pandas as pd
+        import numpy as np
+
+        collateral_ltv = float(features.get('collateral_ltv', 0.0))
+        collateral_type = str(features.get('collateral_type', 'none'))
+        loan_amount = float(features.get('loan_amount', 1000.0))
+
+        df_features = pd.DataFrame({
+            'collateral_coverage_ratio': [1.0 / collateral_ltv if collateral_ltv > 0 else 0.0],
+            'secured_flag': [1 if collateral_type != 'none' else 0],
+            'log_loan_amount': [np.log1p(loan_amount)],
+            'is_auto': [1 if product_type == 'auto' else 0],
+            'is_personal': [1 if product_type == 'personal' else 0],
+            'is_mortgage': [1 if product_type == 'mortgage' else 0],
+            'collateral_ltv': [collateral_ltv]
+        })
+
+        pred = model.predict(df_features)
+        return float(np.clip(pred[0], 0.05, 0.95))
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("predict_lgd failed, returning None: %s", e)
+        return None
+
+def calculate_ecl(pd_rate: float, ead: float, features: dict, product_type: str, lgd_rate: float = 0.40) -> float:
+    """Calculate ECL with trained LGD model or fallback to config lgd_rate."""
+    predicted_lgd = predict_lgd(features, product_type)
+    final_lgd = predicted_lgd if predicted_lgd is not None else float(lgd_rate)
+    return float(pd_rate) * final_lgd * float(ead)
+
 def compute_12m_ecl(record: ExposureRecord) -> float:
     """ECL_12m = pd_12m × lgd × EAD."""
     ead = compute_ead(record)

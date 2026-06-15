@@ -25,10 +25,20 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from agents.credit_analyst_agent import (
-    NAICS_SECTOR_NAMES,
-    NAICS_SECTOR_OUTLOOK,
     QualitativeAssessment,
     RedFlag,
+)
+
+import jinja2
+from pathlib import Path
+
+# Set up Jinja2 environment
+_template_dir = Path(__file__).parent / "templates"
+_jinja_env = jinja2.Environment(
+    loader=jinja2.FileSystemLoader(_template_dir),
+    autoescape=True,
+    trim_blocks=True,
+    lstrip_blocks=True,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,16 +161,16 @@ def _render_borrower_profile(
     fico = _g(features, "fico_score", "credit_score", "credit_bureau_score", default=None)
     fico_str = f"{float(fico):.0f}" if fico is not None else "not provided"
 
-    parts = [
-        f"Borrower reports annual income of {_fmt_money(income)} "
-        f"with {emp_status} employment status and {emp_tenure} of employment history."
-    ]
-    parts.append(
-        f"Credit bureau score is {fico_str} ({pd_band} risk band). "
-        f"Probability of Default: {pd_score:.2%}. "
-        f"Creditworthiness score: {assessment.creditworthiness_score}/5."
+    template = _jinja_env.get_template("borrower_profile.j2")
+    return template.render(
+        income=_fmt_money(income),
+        emp_status=emp_status,
+        emp_tenure=emp_tenure,
+        fico=fico_str,
+        pd_band=pd_band,
+        pd_score=f"{pd_score:.2%}",
+        creditworthiness_score=assessment.creditworthiness_score
     )
-    return " ".join(parts)
 
 
 def _render_financial_strength(
@@ -174,22 +184,19 @@ def _render_financial_strength(
     derog = _g(features, "num_derog_marks", "num_derogatory_marks", default=0)
     bankruptcy = _g(features, "num_bankruptcy", default=0)
 
-    parts: List[str] = []
-    if dti is not None:
-        parts.append(f"Debt-to-income ratio is {_fmt_pct(dti)}, "
-                     f"which is {'within' if float(dti) <= 0.43 else 'above'} "
-                     "standard underwriting guidelines.")
-    if util is not None:
-        parts.append(f"Revolving credit utilization stands at {_fmt_pct(util)}.")
-    if ontime is not None:
-        parts.append(f"On-time payment rate over the last 12 months is {_fmt_pct(ontime)}.")
-    if derog:
-        parts.append(f"There are {int(float(derog))} derogatory mark(s) on file.")
-    if bankruptcy and float(bankruptcy) > 0:
-        parts.append(f"A total of {int(float(bankruptcy))} bankruptcy event(s) have been recorded.")
-    if expected_loss is not None:
-        parts.append(f"Expected loss on this account is estimated at {_fmt_money(expected_loss)}.")
-    return " ".join(parts) if parts else "Insufficient financial data to perform full strength assessment."
+    has_data = any(x is not None for x in (dti, util, ontime, expected_loss)) or bool(derog) or bool(bankruptcy)
+
+    template = _jinja_env.get_template("financial_strength.j2")
+    return template.render(
+        has_data=has_data,
+        dti=_fmt_pct(dti) if dti is not None else None,
+        dti_eval='within' if dti is not None and float(dti) <= 0.43 else 'above',
+        util=_fmt_pct(util) if util is not None else None,
+        ontime=_fmt_pct(ontime) if ontime is not None else None,
+        derog=int(float(derog)) if derog else None,
+        bankruptcy=int(float(bankruptcy)) if bankruptcy and float(bankruptcy) > 0 else None,
+        expected_loss=_fmt_money(expected_loss) if expected_loss is not None else None
+    )
 
 
 def _render_collateral_analysis(
@@ -204,43 +211,46 @@ def _render_collateral_analysis(
     coverage = assessment.collateral_coverage_ratio
     quality = assessment.collateral_quality
 
-    parts = [
-        f"Collateral type: {col_type}.",
-        f"Appraised value: {_fmt_money(col_value)}.",
-    ]
-    if coverage is not None:
-        parts.append(
-            f"Loan-to-collateral coverage ratio: {coverage:.2f}x "
-            f"({quality} — "
-            + ("fully covers the requested exposure."
-               if quality == "Adequate"
-               else "marginal coverage; additional security may be required."
-               if quality == "Marginal"
-               else "insufficient; collateral does not adequately secure the loan.") + ")"
-        )
-    return " ".join(parts)
+    quality_eval = (
+        "fully covers the requested exposure." if quality == "Adequate"
+        else "marginal coverage; additional security may be required." if quality == "Marginal"
+        else "insufficient; collateral does not adequately secure the loan."
+    )
+
+    template = _jinja_env.get_template("collateral_analysis.j2")
+    return template.render(
+        has_collateral=True,
+        col_type=col_type,
+        col_value=_fmt_money(col_value),
+        coverage=f"{coverage:.2f}x" if coverage is not None else None,
+        quality=quality,
+        quality_eval=quality_eval
+    )
 
 
 def _render_industry_macro(assessment: QualitativeAssessment) -> str:
     naics = assessment.naics_code
     sector = assessment.sector_name
     tier = assessment.industry_risk_tier
+    # Import NAICS_SECTOR_OUTLOOK from agents/credit_analyst_agent here or hardcode it since it's just for the template
+    # Wait, earlier we removed the import of NAICS_SECTOR_OUTLOOK.
+    # Let's import it locally to avoid circular dependency issues
+    from agents.credit_analyst_agent import NAICS_SECTOR_OUTLOOK
     outlook = NAICS_SECTOR_OUTLOOK.get(naics, NAICS_SECTOR_OUTLOOK["default"])
-    return (
-        f"Borrower operates in the {sector} sector (NAICS {naics}), "
-        f"classified as {tier} industry risk. {outlook}"
+    template = _jinja_env.get_template("industry_macro.j2")
+    return template.render(
+        sector=sector,
+        naics=naics,
+        tier=tier,
+        outlook=outlook
     )
 
 
 def _render_red_flag_summary(red_flags: List[RedFlag]) -> str:
     if not red_flags:
         return ""
-    lines = ["The following risk concerns were identified during qualitative review:", ""]
-    for flag in red_flags:
-        lines.append(
-            f"- **[{flag.severity}] {flag.flag_type}**: {flag.description}"
-        )
-    return "\n".join(lines)
+    template = _jinja_env.get_template("red_flags.j2")
+    return template.render(red_flags=red_flags)
 
 
 def _render_overall_opinion(
@@ -261,32 +271,26 @@ def _render_overall_opinion(
     }
     recommendation = recommendation_map[opinion]
 
-    parts = [
-        f"Based on the qualitative assessment, this application presents a "
-        f"**{opinion}** risk profile."
-    ]
+    recommendation = recommendation_map.get(opinion, recommendation_map["Marginal"])
 
-    if flag_count > 0:
-        parts.append(
-            f"A total of {flag_count} risk flag(s) were identified "
-            f"({critical_count} Critical, {high_count} High)."
-        )
-
-    parts.append(
-        f"The probability of default is {pd_score:.2%} and the "
-        f"creditworthiness score is {assessment.creditworthiness_score}/5."
-    )
-
+    top_feature = None
+    direction = None
     if shap_top_factors:
         top_feature, top_value = shap_top_factors[0]
         direction = "positively" if top_value > 0 else "negatively"
-        parts.append(
-            f"The primary model driver is `{top_feature}`, which {direction} "
-            "influenced the risk score."
-        )
 
-    parts.append(recommendation)
-    return " ".join(parts)
+    template = _jinja_env.get_template("credit_opinion.j2")
+    return template.render(
+        opinion=opinion,
+        flag_count=flag_count,
+        critical_count=critical_count,
+        high_count=high_count,
+        pd_score=f"{pd_score:.2%}",
+        cw_score=assessment.creditworthiness_score,
+        top_feature=top_feature,
+        direction=direction,
+        recommendation=recommendation
+    )
 
 
 # ---------------------------------------------------------------------------

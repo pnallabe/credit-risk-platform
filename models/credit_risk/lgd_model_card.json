@@ -2,7 +2,7 @@
   "model_name": "cc_lgd_segmentation",
   "model_type": "segmentation_table",
   "version": "1.0.0",
-  "intended_use": "Provide LGD estimates for PD×LGD×EAD expected loss computations",
+  "intended_use": "Provide LGD estimates for PD\u00d7LGD\u00d7EAD expected loss computations",
   "basel_iii_compliance": {
     "unsecured_floor_applied": true,
     "unsecured_floor_value": 0.45,
@@ -79,5 +79,11 @@
       "sample_size": 0,
       "95th_percentile_lgd": 0.42
     }
-  ]
+  ],
+  "metrics": {
+    "rmse": 0.08231085993848983,
+    "mae": 0.0643488079562186
+  },
+  "training_date": "2026-06-15T13:03:17.861793",
+  "status": "trained"
 }

@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
-from models.credit_risk.lgd_model import LGDModel
+from models.model_loader import load_lgd_model
 from risk_models.ecl_engine import ExposureRecord, MacroScenario, compute_portfolio_ecl
 
 
@@ -67,7 +67,7 @@ class StressTestReport:
     capital_adequacy_check: Dict[str, Any]
 
 
-def _build_exposure_records(portfolio_df: pd.DataFrame, lgd_model: LGDModel) -> List[ExposureRecord]:
+def _build_exposure_records(portfolio_df: pd.DataFrame, lgd_model_fallback) -> List[ExposureRecord]:
     df = portfolio_df.copy()
 
     required = {"application_id", "outstanding_balance", "credit_limit", "months_on_book", "pd_12m", "ccf"}
@@ -86,13 +86,33 @@ def _build_exposure_records(portfolio_df: pd.DataFrame, lgd_model: LGDModel) -> 
         df["stage"] = 1
 
     # Baseline LGD from segment model (downturn multipliers are applied per scenario).
-    lgd_inputs = pd.DataFrame(
-        {
-            "product_type": df["product"].astype(str).str.lower(),
-            "risk_grade": df["risk_grade"].astype(str).str.upper(),
-        }
-    )
-    df["lgd"] = lgd_model.predict_batch(lgd_inputs, use_downturn=False).astype(float)
+    try:
+        xgb_model = load_lgd_model("v1")
+        collateral_ltv = df.get("collateral_value", pd.Series(0.0, index=df.index)).astype(float) / df["outstanding_balance"].replace(0, 1)
+        collateral_type = df.get("collateral_type", pd.Series("none", index=df.index)).astype(str).str.lower()
+        loan_amount = df["outstanding_balance"].astype(float)
+
+        xgb_inputs = pd.DataFrame({
+            "collateral_coverage_ratio": np.where(collateral_ltv > 0, 1.0 / collateral_ltv, 0.0),
+            "secured_flag": np.where(collateral_type != 'none', 1, 0),
+            "log_loan_amount": np.log1p(loan_amount.clip(lower=0)),
+            "is_auto": np.where(df["product"].astype(str).str.lower() == 'auto', 1, 0),
+            "is_personal": np.where(df["product"].astype(str).str.lower() == 'personal', 1, 0),
+            "is_mortgage": np.where(df["product"].astype(str).str.lower() == 'mortgage', 1, 0),
+            "collateral_ltv": collateral_ltv
+        })
+        preds = xgb_model.predict(xgb_inputs)
+        df["lgd"] = np.clip(preds, 0.05, 0.95)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Failed to use trained LGD model in stress test, using fallback: %s", e)
+        lgd_inputs = pd.DataFrame(
+            {
+                "product_type": df["product"].astype(str).str.lower(),
+                "risk_grade": df["risk_grade"].astype(str).str.upper(),
+            }
+        )
+        df["lgd"] = lgd_model_fallback.predict_batch(lgd_inputs, use_downturn=False).astype(float)
 
     records: List[ExposureRecord] = []
     for row in df.itertuples(index=False):
@@ -116,7 +136,7 @@ def _build_exposure_records(portfolio_df: pd.DataFrame, lgd_model: LGDModel) -> 
 def run_portfolio_stress_test(
     portfolio_df: pd.DataFrame,
     scenario_set: MacroScenarioSet,
-    lgd_model: LGDModel,
+    lgd_model_fallback,
     discount_rate: float = 0.05,
     tier1_ratio_pre_stress: float = 0.12,
 ) -> StressTestReport:
@@ -126,7 +146,7 @@ def run_portfolio_stress_test(
     as reducing Tier-1 capital dollars, then recompute the ratio.
     """
 
-    records = _build_exposure_records(portfolio_df, lgd_model)
+    records = _build_exposure_records(portfolio_df, lgd_model_fallback)
 
     ecl_df = compute_portfolio_ecl(records, scenarios=scenario_set.scenarios, discount_rate=discount_rate)
     if len(ecl_df) == 0:

@@ -20,10 +20,8 @@ from src.ai_audit_log import (
 )
 import src.ai_audit_log as ai_audit_log_module
 
-# Also need verify_ai_agent_chain from audit/chain_verifier
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
-from audit.chain_verifier import verify_ai_agent_chain
-
+# Import verify_ai_agent_chain from src.ai_audit_log
+from src.ai_audit_log import verify_ai_agent_chain
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -92,8 +90,8 @@ async def test_verify_ai_agent_chain_clean(tmp_path):
         await _log(db_url, session_id, str(uuid.uuid4()))
 
     result = await verify_ai_agent_chain(db_url, session_id=session_id)
-    assert result.verified is True
-    assert result.rows_checked == 5
+    assert result.is_intact is True
+    assert result.verified_records == 5
 
 
 @pytest.mark.asyncio
@@ -115,8 +113,8 @@ async def test_verify_ai_agent_chain_detects_tamper(tmp_path):
     conn.close()
 
     result = await verify_ai_agent_chain(db_url, session_id=session_id)
-    assert result.verified is False
-    assert result.first_tampered_log_id is not None
+    assert result.is_intact is False
+    assert r2.log_id in result.broken_at
 
 
 @pytest.mark.asyncio
@@ -245,8 +243,8 @@ async def test_hash_chain_integrity_array_fields(tmp_path):
         )
 
     result = await verify_ai_agent_chain(db_url, session_id=session_id)
-    assert result.verified is True
-    assert result.rows_checked == 3
+    assert result.is_intact is True
+    assert result.verified_records == 3
 
 
 @pytest.mark.asyncio

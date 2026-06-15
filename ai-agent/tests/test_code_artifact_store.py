@@ -30,6 +30,7 @@ async def test_store_and_retrieve_sql_artifact(tmp_path):
         turn_id="turn-1",
         artifact_type="sql",
         content=sql,
+        tenant_id="tenant1",
     )
     # content_hash must be SHA-256 of content
     expected_hash = hashlib.sha256(sql.encode()).hexdigest()
@@ -55,6 +56,7 @@ async def test_store_python_artifact(tmp_path):
         turn_id="turn-2",
         artifact_type="python",
         content="df = pd.read_sql('SELECT 1', conn)",
+        tenant_id="tenant1",
     )
     assert artifact.artifact_type == "python"
 
@@ -69,6 +71,7 @@ async def test_invalid_artifact_type_raises(tmp_path):
             turn_id="turn-3",
             artifact_type="bash",  # type: ignore[arg-type]
             content="echo hello",
+            tenant_id="tenant1",
         )
 
 
@@ -87,6 +90,7 @@ async def test_get_artifacts_for_session_date_filter(tmp_path):
         turn_id="turn-A",
         artifact_type="sql",
         content="SELECT 1",
+        tenant_id="tenant1",
     )
     # Store artifact 2 (session-level, turn B) - will have a later created_at
     art2 = await store_artifact(
@@ -95,6 +99,7 @@ async def test_get_artifacts_for_session_date_filter(tmp_path):
         turn_id="turn-B",
         artifact_type="sql",
         content="SELECT 2",
+        tenant_id="tenant1",
     )
 
     # Filter from art2's created_at
@@ -109,12 +114,30 @@ async def test_source_table_extraction(tmp_path):
     db_url = str(tmp_path / "test.db")
     artifact = await store_artifact(
         db_url=db_url,
-        session_id="sess-1",
+        session_id="session-table",
         turn_id="turn-table",
         artifact_type="sql",
         content="SELECT * FROM audit_log WHERE tenant_id = ?",
+        tenant_id="tenant1",
     )
     assert artifact.source_table == "audit_log"
+
+@pytest.mark.asyncio
+async def test_get_artifact_history(tmp_path):
+    db_url = str(tmp_path / "test.db")
+    await store_artifact(db_url, "session_h1", "t1", "sql", "SELECT 1", "tenant1")
+    await store_artifact(db_url, "session_h1", "t2", "python", "print(1)", "tenant1")
+    await store_artifact(db_url, "session_h2", "t1", "sql", "SELECT 2", "tenant1") # different session
+    await store_artifact(db_url, "session_h1", "t3", "sql", "SELECT 3", "tenant2") # different tenant
+
+    from src.code_artifact_store import get_artifact_history
+    artifacts = await get_artifact_history(db_url, "session_h1", "tenant1")
+
+    assert len(artifacts) == 2
+    assert artifacts[0].turn_id == "t1"
+    assert artifacts[1].turn_id == "t2"
+    assert artifacts[0].content == "SELECT 1"
+    assert artifacts[1].content == "print(1)"
 
 
 def test_no_delete_method():

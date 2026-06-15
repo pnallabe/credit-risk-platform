@@ -102,7 +102,7 @@ async def test_daily_portfolio_with_data(tmp_db, monkeypatch):
     conn = sqlite3.connect(tmp_db)
     rows = conn.execute("SELECT body FROM notifications").fetchall()
     conn.close()
-    assert any("70%" in r[0] for r in rows)
+    assert any("70.0%" in r[0] for r in rows)
 
 
 @freeze_time("2025-02-03 08:00:00")  # A Monday

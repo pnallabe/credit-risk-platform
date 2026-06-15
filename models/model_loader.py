@@ -187,3 +187,14 @@ def cache_info() -> Dict[str, Any]:
             ],
             "total_models": len(_MODEL_CACHE),
         }
+
+# ---------------------------------------------------------------------------
+# Convenience accessors
+# ---------------------------------------------------------------------------
+
+def load_lgd_model(version: str = "v1") -> Any:
+    """Convenience method to load the LGD model."""
+    import os
+    base_dir = Path(__file__).parent.parent
+    path = base_dir / "models" / "credit_risk" / f"lgd_model_{version}.pkl"
+    return get_or_load(path, version=version)

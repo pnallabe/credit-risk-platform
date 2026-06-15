@@ -159,6 +159,7 @@ def _sync_create_referral(
     pd_score: Optional[float],
     fraud_probability: Optional[float],
     sla_hours: int,
+    status: str = "pending",
 ) -> ReferralRecord:
     _ensure_schema(db_url)
     path = _strip_url(db_url)
@@ -176,11 +177,11 @@ def _sync_create_referral(
                  sla_deadline, claimed_by, claimed_at, resolved_by, resolved_at,
                  resolution, resolution_notes, approved_by, override_id,
                  conditional_terms, audit_log_id, pd_score, fraud_probability)
-            VALUES (?, ?, ?, 'pending', ?, ?, NULL, NULL, NULL, NULL,
+            VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL,
                     NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
             """,
             (
-                referral_id, application_id, tenant_id, now_str, deadline,
+                referral_id, application_id, tenant_id, status, now_str, deadline,
                 audit_log_id, pd_score, fraud_probability,
             ),
         )
@@ -413,12 +414,13 @@ async def create_referral(
     pd_score: Optional[float] = None,
     fraud_probability: Optional[float] = None,
     sla_hours: int = REFERRAL_SLA_HOURS,
+    status: str = "pending",
 ) -> ReferralRecord:
     """Create a new referral entry in pending state."""
     return await asyncio.to_thread(
         _sync_create_referral,
         db_url, application_id, tenant_id,
-        audit_log_id, pd_score, fraud_probability, sla_hours,
+        audit_log_id, pd_score, fraud_probability, sla_hours, status,
     )
 
 

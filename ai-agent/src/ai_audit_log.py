@@ -438,3 +438,85 @@ async def get_ai_audit_records(
         rows = result.mappings().all()
 
     return [_mapping_to_record(r) for r in rows]
+
+
+@dataclass
+class ChainVerificationResult:
+    total_records: int
+    verified_records: int
+    broken_at: list[str]
+    is_intact: bool
+
+
+async def verify_ai_agent_chain(
+    db_url: str,
+    session_id: Optional[str] = None,
+) -> ChainVerificationResult:
+    """
+    Verify the cryptographic hash chain of the AI agent audit log.
+    If session_id is provided, verify only that session's chain.
+    If session_id is None, verify the entire table across all sessions.
+    """
+    await _ensure_schema(db_url)
+    engine = _get_engine(db_url)
+
+    # We must order by logged_at ASC, log_id ASC to reconstruct the chain properly.
+    # If checking the whole table, we should group by session_id logically, because
+    # the previous_hash is per session_id (see _get_previous_hash).
+    # Wait, the prompt says "Walk rows in (session_id, logged_at) order."
+
+    sql = "SELECT * FROM ai_agent_audit_log"
+    params = {}
+    if session_id:
+        sql += " WHERE session_id = :session_id"
+        params["session_id"] = session_id
+
+    sql += " ORDER BY session_id ASC, logged_at ASC, log_id ASC"
+
+    async with engine.connect() as conn:
+        result = await conn.execute(_sa_text(sql), params)
+        rows = result.mappings().all()
+
+    total_records = len(rows)
+    verified_records = 0
+    broken_at = []
+
+    # previous_hash per session
+    expected_previous_hashes = {}
+
+    for row in rows:
+        r = _mapping_to_record(row)
+        sid = r.session_id
+
+        # Expected previous hash for this session
+        expected_prev = expected_previous_hashes.get(sid, "GENESIS")
+
+        # We need to recompute the record hash
+        recomputed_hash = _compute_chain_hash(
+            log_id=r.log_id,
+            logged_at=r.logged_at,
+            previous_hash=r.previous_hash,
+            query_text=r.query_text,
+            result_hash=r.result_hash,
+            confidence_score=r.confidence_score,
+            answer_text=r.answer_text,
+            code_artifact_uris=r.code_artifact_uris,
+            bq_job_ids=r.bq_job_ids,
+            code_zip_uri=r.code_zip_uri,
+            code_sha256_hashes=r.code_sha256_hashes,
+        )
+
+        if r.previous_hash != expected_prev or r.record_hash != recomputed_hash:
+            broken_at.append(r.log_id)
+        else:
+            verified_records += 1
+
+        # The next record in this session expects THIS record's hash
+        expected_previous_hashes[sid] = r.record_hash
+
+    return ChainVerificationResult(
+        total_records=total_records,
+        verified_records=verified_records,
+        broken_at=broken_at,
+        is_intact=len(broken_at) == 0,
+    )

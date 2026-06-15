@@ -38,33 +38,16 @@ logger = logging.getLogger(__name__)
 # NAICS 2-digit sector → industry risk tier
 # ---------------------------------------------------------------------------
 
-NAICS_RISK_TIERS: Dict[str, str] = {
-    "11": "Elevated",   # Agriculture, forestry, fishing, hunting
-    "21": "Elevated",   # Mining, quarrying, oil and gas extraction
-    "22": "Low",        # Utilities
-    "23": "High",       # Construction
-    "31": "Medium",     # Manufacturing (light)
-    "32": "Medium",     # Manufacturing (paper, chemicals)
-    "33": "Medium",     # Manufacturing (heavy)
-    "42": "Low",        # Wholesale trade
-    "44": "Low",        # Retail trade
-    "45": "Low",        # Retail trade (non-store)
-    "48": "Low",        # Transportation and warehousing
-    "49": "Low",        # Postal and courier
-    "51": "Low",        # Information
-    "52": "Low",        # Finance and insurance
-    "53": "Medium",     # Real estate and rental
-    "54": "Low",        # Professional, scientific, technical services
-    "55": "Low",        # Management of companies
-    "56": "Medium",     # Administrative and support, waste management
-    "61": "Medium",     # Educational services
-    "62": "Medium",     # Health care and social assistance
-    "71": "High",       # Arts, entertainment, recreation
-    "72": "Medium",     # Accommodation and food services
-    "81": "Medium",     # Other services (except public administration)
-    "92": "Low",        # Public administration
-    "default": "Medium",
-}
+import json
+from pathlib import Path
+
+_tiers_path = Path(__file__).parents[1] / "data" / "industry_risk_tiers.json"
+try:
+    with open(_tiers_path) as f:
+        NAICS_RISK_TIERS: Dict[str, str] = json.load(f)
+except Exception as e:
+    logger.warning("Could not load industry_risk_tiers.json: %s", e)
+    NAICS_RISK_TIERS = {"default": "Medium"}
 
 # Human-readable sector names for narratives
 NAICS_SECTOR_NAMES: Dict[str, str] = {
