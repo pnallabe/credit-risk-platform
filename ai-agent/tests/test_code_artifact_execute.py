@@ -5,7 +5,7 @@ import pytest
 import jwt
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:////tmp/test_{uuid.uuid4().hex}.db"
-os.environ["JWT_SECRET"] = "test-secret"
+os.environ["JWT_SECRET"] = "test-secret"  # pragma: allowlist secret
 
 from fastapi.testclient import TestClient
 import src.main

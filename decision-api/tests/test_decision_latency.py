@@ -5,7 +5,8 @@ import os
 import jwt
 from fastapi.testclient import TestClient
 
-os.environ["JWT_SECRET"] = "test-secret-key-12345"
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
+os.environ["JWT_SECRET"] = "test-secret-key-12345"  # pragma: allowlist secret
 from src.main import app
 
 client = TestClient(app)
