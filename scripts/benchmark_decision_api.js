@@ -23,10 +23,11 @@ export const options = {
 
 export default function () {
     const url = 'http://host.docker.internal:8000/v1/decisions';
+    const jwtToken = __ENV.BENCHMARK_JWT || "dummy-token";
     const params = {
         headers: {
             'Content-Type': 'application/json',
-            'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0ZW5hbnRfaWQiOiJ0ZXN0LXRlbmFudCJ9.nBAQboLfONiW1hp5bogVxAp6RjEGe__-anImMNjQpXs',
+            'Authorization': `Bearer ${jwtToken}`,
         },
     };
 

@@ -2,8 +2,8 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
-os.environ["DATABASE_URL"] = "sqlite+aiosqlite:///:memory:"
-os.environ["JWT_SECRET"] = "test-secret"
+os.environ["DATABASE_URL"] = "sqlite+aiosqlite:////tmp/test.db"
+os.environ["JWT_SECRET"] = "test-secret"  # pragma: allowlist secret
 
 from src.main import app, JWT_SECRET, JWT_ALGORITHM, store_artifact, _get_engine
 from fastapi.testclient import TestClient
