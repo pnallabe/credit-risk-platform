@@ -1,0 +1,137 @@
+{
+  "description": "Input payload for a single loan underwriting decision.",
+  "properties": {
+    "annual_income": {
+      "exclusiveMinimum": 0.0,
+      "title": "Annual Income",
+      "type": "number"
+    },
+    "application_id": {
+      "description": "UUID identifying the application",
+      "title": "Application Id",
+      "type": "string"
+    },
+    "borrower_state": {
+      "anyOf": [
+        {
+          "maxLength": 2,
+          "minLength": 2,
+          "pattern": "^[A-Z]{2}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "ISO 3166-2 two-letter US state code used for APR cap enforcement.",
+      "title": "Borrower State"
+    },
+    "credit_score": {
+      "maximum": 850,
+      "minimum": 300,
+      "title": "Credit Score",
+      "type": "integer"
+    },
+    "customer_id": {
+      "title": "Customer Id",
+      "type": "string"
+    },
+    "debt_to_income_ratio": {
+      "maximum": 0.65,
+      "minimum": 0.0,
+      "title": "Debt To Income Ratio",
+      "type": "number"
+    },
+    "employer_tenure_months": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Employer Tenure Months",
+      "type": "integer"
+    },
+    "employment_status": {
+      "pattern": "^(employed|self-employed|unemployed|retired)$",
+      "title": "Employment Status",
+      "type": "string"
+    },
+    "existing_debt_amount": {
+      "minimum": 0.0,
+      "title": "Existing Debt Amount",
+      "type": "number"
+    },
+    "loan_amount": {
+      "maximum": 100000.0,
+      "minimum": 1000.0,
+      "title": "Loan Amount",
+      "type": "number"
+    },
+    "loan_purpose": {
+      "title": "Loan Purpose",
+      "type": "string"
+    },
+    "loan_term_months": {
+      "enum": [
+        12,
+        24,
+        36,
+        48,
+        60
+      ],
+      "title": "Loan Term Months",
+      "type": "integer"
+    },
+    "months_since_last_delinquency": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Months Since Last Delinquency"
+    },
+    "num_derogatory_marks": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Num Derogatory Marks",
+      "type": "integer"
+    },
+    "num_open_accounts": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Num Open Accounts",
+      "type": "integer"
+    },
+    "ocr_confidence": {
+      "anyOf": [
+        {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "OCR confidence score from document ingestion.",
+      "title": "Ocr Confidence"
+    }
+  },
+  "required": [
+    "application_id",
+    "customer_id",
+    "credit_score",
+    "annual_income",
+    "employment_status",
+    "debt_to_income_ratio",
+    "existing_debt_amount",
+    "loan_amount",
+    "loan_purpose",
+    "loan_term_months"
+  ],
+  "title": "LoanApplicationRequest",
+  "type": "object"
+}

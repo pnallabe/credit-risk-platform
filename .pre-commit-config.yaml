@@ -1,0 +1,117 @@
+# Pre-commit hook configuration
+# Install: make install-hooks
+# Manual run: make check-secrets  (or: pre-commit run --all-files)
+# Docs: https://pre-commit.com
+
+default_stages: [pre-commit]
+fail_fast: false
+
+repos:
+
+  # ---------------------------------------------------------------------------
+  # Standard hygiene
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: check-added-large-files
+        name: Block large files (> 5 MB)
+        args: ["--maxkb=5120"]        # 5 MB; model .pkl live in .gitignore
+
+      - id: detect-private-key
+        name: Detect private keys (PEM / RSA / EC / DSA)
+
+      - id: check-merge-conflict
+        name: No merge-conflict markers
+
+      - id: no-commit-to-branch
+        name: No direct commits to main / master
+        args: [--branch, main, --branch, master]
+
+      - id: check-yaml
+        name: Validate YAML syntax
+        exclude: ^mkdocs\.yml$
+
+      - id: check-json
+        name: Validate JSON syntax
+
+      - id: check-toml
+        name: Validate TOML syntax
+
+      - id: end-of-file-fixer
+        name: Ensure files end with newline
+        exclude: \.(pkl|h5|parquet|csv|db|sqlite3|png|jpg|jpeg|gif|ico|woff2?)$
+
+      - id: trailing-whitespace
+        name: Remove trailing whitespace
+        exclude: \.(pkl|h5|parquet|csv|db|sqlite3)$
+
+      - id: check-ast
+        name: Validate Python syntax (AST)
+
+      - id: debug-statements
+        name: No leftover debug / breakpoint statements
+
+  # ---------------------------------------------------------------------------
+  # Secret / credential detection  (Gitleaks)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: Gitleaks — scan for secrets
+        # Uses .gitleaks.toml for project-specific rules & allowlists
+
+  # ---------------------------------------------------------------------------
+  # Secret detection  (detect-secrets — secondary layer)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        name: detect-secrets — prevent new secrets
+        args: ["--baseline", ".secrets.baseline"]
+        exclude: (\.secrets\.baseline|package-lock\.json|yarn\.lock)$
+
+  # ---------------------------------------------------------------------------
+  # Jupyter notebook output stripping
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/kynan/nbstripout
+    rev: 0.7.1
+    hooks:
+      - id: nbstripout
+        name: Strip Jupyter notebook outputs before commit
+
+  # ---------------------------------------------------------------------------
+  # Local / project-specific hooks
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+
+      - id: no-dotenv-files
+        name: Block .env files from being committed
+        language: fail
+        entry: '.env files must not be committed — use .env.example for templates'
+        files: '^\.env(\.[a-zA-Z0-9_-]+)?$'
+        exclude: '^\.env\.example$'
+
+      - id: no-model-artifacts
+        name: Block raw model / data artifacts (use DVC or GCS/S3)
+        language: fail
+        entry: 'Binary model/data artifacts belong in object storage, not git'
+        files: '\.(pkl|joblib|h5|keras|pt|pth|onnx|parquet|feather|arrow|npz|npy)$'
+        exclude: '^mlruns/.*\.(yaml|json|txt)$'
+
+      - id: no-cloud-credentials
+        name: Block cloud credential files
+        language: fail
+        entry: 'Cloud credential files must not be committed'
+        files: '(credentials\.json|service.?account.*\.json|application_default_credentials\.json)$'
+        exclude: '^\.env\.example$'
+
+      - id: check-hardcoded-secrets
+        name: Scan source files for hardcoded secrets (regex)
+        language: pygrep
+        entry: '(?i)(password|passwd|api_key|apikey|auth_token|access_token|client_secret|jwt_secret|nextauth_secret)\s*=\s*["\x27][^"${}]{8,}["\x27]'
+        files: '\.(py|js|ts|tsx|jsx)$'
+        exclude: '(test|spec|mock|fixture|\.env\.example)'

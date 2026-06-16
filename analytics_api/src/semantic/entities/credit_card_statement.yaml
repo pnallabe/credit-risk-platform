@@ -1,0 +1,136 @@
+entity: CreditCardStatement
+description: "Monthly statement for a credit card account — balances, payments, revenue, and delinquency status"
+sources:
+  - name: credit_risk_model_dev.cc_monthly_statements
+    join_key: statement_id
+    freshness_sla_hours: 24
+  - name: credit_risk.cc_account_monthly_economics
+    join_key: account_id
+    freshness_sla_hours: 4
+primary_key: statement_id
+attributes:
+  statement_id:
+    type: string
+    description: "Unique identifier for the monthly statement"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: statement_id
+  origination_id:
+    type: string
+    description: "Foreign key to CreditCardAccount"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: origination_id
+  customer_id:
+    type: string
+    description: "Foreign key to the card holder"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: customer_id
+  account_id:
+    type: integer
+    description: "Account identifier (production dataset)"
+    mappings:
+      credit_risk.cc_account_monthly_economics: account_id
+  statement_date:
+    type: date
+    description: "Statement cycle date"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: statement_date
+  period_month:
+    type: integer
+    description: "Statement period as integer epoch (production dataset)"
+    mappings:
+      credit_risk.cc_account_monthly_economics: period_month
+  year:
+    type: integer
+    description: "Statement year"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: year
+  month:
+    type: integer
+    description: "Statement month (1–12)"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: month
+  balance_usd:
+    type: decimal
+    description: "Statement closing balance in USD"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: balance_usd
+  avg_balance:
+    type: decimal
+    description: "Average daily balance during the period (production)"
+    mappings:
+      credit_risk.cc_account_monthly_economics: avg_balance
+  credit_limit_usd:
+    type: decimal
+    description: "Credit limit at statement date"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: credit_limit_usd
+  utilization_rate:
+    type: decimal
+    description: "Balance / credit limit utilization ratio"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: utilization_rate
+      credit_risk.cc_account_monthly_economics: utilization_rate
+  minimum_payment_usd:
+    type: decimal
+    description: "Minimum payment due"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: minimum_payment_usd
+  actual_payment_usd:
+    type: decimal
+    description: "Actual payment received"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: actual_payment_usd
+  payment_ratio:
+    type: decimal
+    description: "actual_payment / minimum_payment ratio"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: payment_ratio
+  purchase_volume_usd:
+    type: decimal
+    description: "Total purchase spend during the period"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: purchase_volume_usd
+  delinquency_status:
+    type: string
+    description: "Delinquency bucket for the statement period"
+    allowed_values: [CURRENT, 30_DPD, 60_DPD, 90_DPD, 120_DPD, CHARGED_OFF]
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: delinquency_status
+  days_past_due:
+    type: integer
+    description: "Days past due at statement date"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: days_past_due
+  interest_revenue_usd:
+    type: decimal
+    description: "Interest revenue earned during the period"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: interest_revenue_usd
+      credit_risk.cc_account_monthly_economics: interest_income
+  fee_revenue_usd:
+    type: decimal
+    description: "Fee revenue (late fees, annual fees) during the period"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: fee_revenue_usd
+      credit_risk.cc_account_monthly_economics: late_fee_income
+  interchange_revenue_usd:
+    type: decimal
+    description: "Interchange revenue earned during the period"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: interchange_revenue_usd
+      credit_risk.cc_account_monthly_economics: interchange_income
+  net_income_before_tax:
+    type: decimal
+    description: "Net income before tax for the period (production)"
+    mappings:
+      credit_risk.cc_account_monthly_economics: net_income_before_tax
+  bureau_score_current:
+    type: integer
+    description: "Current bureau score at statement date"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: bureau_score_current
+  account_age_months:
+    type: integer
+    description: "Age of the account in months"
+    mappings:
+      credit_risk_model_dev.cc_monthly_statements: account_age_months

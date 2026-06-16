@@ -1,0 +1,113 @@
+entity: Loan
+description: "A credit facility extended to a customer"
+sources:
+  - name: credit_risk.personal_loans_funded
+    join_key: loan_id
+    freshness_sla_hours: 1
+  - name: credit_risk.loan_monthly_ledger
+    join_key: loan_id
+    freshness_sla_hours: 4
+  - name: credit_risk.loan_origination_economics
+    join_key: loan_id
+    freshness_sla_hours: 24
+  - name: credit_risk.personal_loan_payments
+    join_key: loan_id
+    freshness_sla_hours: 1
+  - name: credit_risk.org_balance_sheet
+    join_key: null
+    freshness_sla_hours: 24
+  - name: credit_risk.org_income_statement
+    join_key: null
+    freshness_sla_hours: 24
+primary_key: loan_id
+attributes:
+  loan_id:
+    type: string
+    description: "Unique identifier for the loan"
+    mappings:
+      credit_risk.personal_loans_funded: loan_id
+      credit_risk.loan_monthly_ledger: loan_id
+      credit_risk.loan_origination_economics: loan_id
+      credit_risk.personal_loan_payments: loan_id
+  customer_id:
+    type: string
+    description: "Foreign key to Customer entity"
+    mappings:
+      credit_risk.personal_loans_funded: customer_id
+      credit_risk.personal_loan_payments: customer_id
+  principal_amount:
+    type: decimal
+    description: "Original loan principal in USD"
+    mappings:
+      credit_risk.personal_loans_funded: principal_amount
+      credit_risk.loan_origination_economics: principal_amount
+  origination_date:
+    type: date
+    description: "Date the loan was originated (native DATE column)"
+    mappings:
+      credit_risk.personal_loans_funded: origination_date
+      credit_risk.loan_origination_economics: origination_date
+  current_balance:
+    type: decimal
+    description: "Outstanding principal balance"
+    mappings:
+      credit_risk.personal_loans_funded: current_balance
+  remaining_balance:
+    type: decimal
+    description: "Remaining balance per payment period"
+    mappings:
+      credit_risk.loan_monthly_ledger: remaining_balance
+      credit_risk.personal_loan_payments: remaining_balance
+  loan_status:
+    type: string
+    description: "Current loan status"
+    allowed_values: [CURRENT, DELINQUENT, DEFAULT, CHARGED_OFF, PAID_OFF, ACTIVE, CLOSED]
+    mappings:
+      credit_risk.personal_loans_funded: loan_status
+  product_type:
+    type: string
+    description: "Loan product category"
+    allowed_values: [PERSONAL, MORTGAGE, CREDIT_CARD, AUTO, STUDENT]
+    mappings:
+      credit_risk.personal_loans_funded: product_code
+      credit_risk.loan_monthly_ledger: product_type
+      credit_risk.org_balance_sheet: product_type
+      credit_risk.org_income_statement: product_type
+  fico_score:
+    type: integer
+    description: "FICO credit score at origination"
+    mappings:
+      credit_risk.personal_loans_funded: fico_score_at_origination
+      credit_risk.loan_origination_economics: fico_score_at_origination
+  interest_rate:
+    type: decimal
+    description: "Annual interest rate"
+    mappings:
+      credit_risk.personal_loans_funded: interest_rate
+  apr:
+    type: decimal
+    description: "Annual percentage rate"
+    mappings:
+      credit_risk.personal_loans_funded: apr
+  fico_tier:
+    type: string
+    description: "FICO score tier bucket"
+    mappings:
+      credit_risk.personal_loans_funded: fico_tier
+  delinquency_rate:
+    type: decimal
+    description: "Portfolio delinquency rate (30+ DPD)"
+    mappings:
+      credit_risk.org_balance_sheet: delinquency_rate
+  charge_off_rate:
+    type: decimal
+    description: "Portfolio charge-off rate"
+    mappings:
+      credit_risk.org_income_statement: charge_off_rate
+  period_end_date:
+    type: integer
+    description: "Period end date (INT64 nanoseconds epoch)"
+    mappings:
+      credit_risk.org_balance_sheet: period_end_date
+      credit_risk.org_income_statement: period_end_date
+      credit_risk.loan_monthly_ledger: period_month

@@ -1,0 +1,61 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: credit-risk-etl
+  labels:
+    app: credit-risk-etl
+    component: etl
+    managed-by: cloud-run
+spec:
+  template:
+    metadata:
+      annotations:
+        # Always-on: keep at least one instance warm to avoid message accumulation
+        autoscaling.knative.dev/minScale: "1"
+        autoscaling.knative.dev/maxScale: "10"
+    spec:
+      # Extend timeout — the consumer runs indefinitely; Cloud Run will SIGTERM on scale-in
+      timeoutSeconds: 3600
+      containerConcurrency: 1
+      containers:
+        - image: gcr.io/${PROJECT_ID}/credit-risk-etl:latest
+          # Resource allocation
+          resources:
+            limits:
+              memory: 1Gi
+              cpu: "1"
+            requests:
+              memory: 512Mi
+              cpu: "500m"
+          env:
+            - name: PUBSUB_SUBSCRIPTION
+              valueFrom:
+                secretKeyRef:
+                  name: etl-config
+                  key: PUBSUB_SUBSCRIPTION
+            - name: BQ_PROJECT
+              valueFrom:
+                secretKeyRef:
+                  name: etl-config
+                  key: BQ_PROJECT
+            - name: BQ_DATASET
+              valueFrom:
+                secretKeyRef:
+                  name: etl-config
+                  key: BQ_DATASET
+            - name: PULL_BATCH_SIZE
+              value: "100"
+            - name: ENVIRONMENT
+              value: "prod"
+          # Health check — the consumer loop sets _RUNNING=False on SIGTERM; Cloud Run
+          # will restart if the process exits with non-zero.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 60
+            failureThreshold: 3
+  traffic:
+    - percent: 100
+      latestRevision: true

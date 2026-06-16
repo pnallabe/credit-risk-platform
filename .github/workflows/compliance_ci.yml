@@ -1,0 +1,151 @@
+name: Compliance CI
+
+# Triggers per Section 23.5 — any change to decision-critical components
+on:
+  pull_request:
+    paths:
+      - "decision_engine/**"
+      - "models/**"
+      - "compliance/**"
+      - "config/usury_caps.yaml"
+      - "config/adverse_action_codes.yaml"
+      - "monitoring/fair_lending.py"
+      - "audit/logger.py"
+      - "mlflow_config/**"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Job 1: Compliance pre-flight (must pass before any other job)
+  # -------------------------------------------------------------------------
+  compliance-preflight:
+    name: Compliance Pre-flight Gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run compliance pre-flight (all 7 checks)
+        run: |
+          python scripts/run_compliance_preflight.py \
+            --policy-file config/usury_caps.yaml \
+            --aa-codes-file config/adverse_action_codes.yaml \
+            --fail-fast
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Fair lending smoke test
+        run: python -m pytest tests/compliance/test_fair_lending_ci.py -v --tb=short
+        env:
+          COMPLIANCE_CI_MODE: "true"
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Check usury cap legal sign-off age (max 12 months)
+        run: python scripts/check_usury_cap_age.py --max-age-days 365
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Validate adverse action code completeness
+        run: python scripts/validate_adverse_action_codes.py
+
+      - name: Validate compliance data plane BQ schema
+        run: python scripts/check_compliance_schema.py
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Verify usury cap state coverage (all 50 states + DC)
+        run: python scripts/verify_usury_cap_coverage.py --require-all-states
+
+  # -------------------------------------------------------------------------
+  # Job 2: Model governance gate (depends on pre-flight)
+  # -------------------------------------------------------------------------
+  model-governance-gate:
+    name: Model Governance Gate
+    needs: compliance-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Validate MODEL_GOVERNANCE thresholds not relaxed
+        run: |
+          python scripts/check_governance_thresholds.py \
+            --baseline-file .governance-baseline.json
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Check audit table DDL backward compatibility
+        run: python scripts/check_audit_schema_compat.py
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+  # -------------------------------------------------------------------------
+  # Job 3: Policy validation (depends on pre-flight)
+  # -------------------------------------------------------------------------
+  policy-validation:
+    name: Policy Integrity Gate
+    needs: compliance-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Policy decision regression tests
+        run: python -m pytest tests/compliance/test_policy_regression.py -v --tb=short
+        env:
+          COMPLIANCE_CI_MODE: "true"
+
+      - name: Verify usury cap state coverage in config
+        run: python scripts/verify_usury_cap_coverage.py --require-all-states
+
+      - name: Check compliance engine audit completeness
+        run: python scripts/check_audit_completeness.py
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GCP_SA_KEY }}
+
+  # -------------------------------------------------------------------------
+  # Job 4: RBAC & separation-of-duties tests
+  # -------------------------------------------------------------------------
+  rbac-validation:
+    name: RBAC & SoD Tests
+    needs: compliance-preflight
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run RBAC tests
+        run: python -m pytest tests/compliance/test_rbac.py -v --tb=short
+
+      - name: Run compliance engine unit tests
+        run: python -m pytest tests/compliance/test_compliance_engine.py -v --tb=short
+
+      - name: Run data plane client tests
+        run: python -m pytest tests/compliance/test_data_plane.py -v --tb=short

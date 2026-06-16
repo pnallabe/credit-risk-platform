@@ -1,0 +1,118 @@
+{
+  "tenant_id": "plaid_data",
+  "product_type": "SMB_SECURED_LOAN",
+  "generated_at": "2026-06-04T19:55:53.998941+00:00",
+  "policy_version": "v1",
+  "policy_parameters": {
+    "product_type": "SMB_SECURED_LOAN",
+    "pd_threshold_approve": 0.09,
+    "pd_threshold_refer": 0.17,
+    "fraud_reject_threshold": 0.55,
+    "fraud_review_threshold": 0.28,
+    "max_dti": 0.65,
+    "min_open_accounts": 0,
+    "min_loan_amount_usd": 5000.0,
+    "max_loan_amount_usd": 500000.0,
+    "base_apr": 8.5,
+    "max_apr": 35.0,
+    "required_features": [
+      "avg_monthly_inflow",
+      "avg_monthly_outflow",
+      "net_monthly_cash_flow",
+      "cash_flow_stability_score",
+      "nsf_count_90d",
+      "bank_account_age_months",
+      "annual_revenue",
+      "years_in_business",
+      "debt_service_coverage_ratio",
+      "business_type",
+      "collateral_value_usd",
+      "collateral_type",
+      "plaid_income_estimate",
+      "income_source_count"
+    ],
+    "extra_rules": [
+      "years_in_business_min_1",
+      "dscr_min_1_20",
+      "personal_guarantee_required_under_250k",
+      "cra_small_business_tracking",
+      "collateral_lien_search_required",
+      "plaid_business_revenue_min_3_months",
+      "plaid_nsf_gate_2"
+    ],
+    "description": "SMB secured term loan \u2014 Plaid-data tenant.  Business cash-flow from Plaid replaces 2-year tax return requirement for companies < 24 months operating history.",
+    "regulatory_notes": "ECOA Reg B (business credit). CRA small-business reporting. UCC-1 fixture filing required for collateral. Plaid business account access requires separate OAuth consent from authorized signer (controller). SBA 7(a) eligibility check if loan \u2264 $5M."
+  },
+  "regulatory_compliance_checklist": [
+    {
+      "regulation": "ECOA / Reg B",
+      "requirement": "Business credit adverse action within 30 days",
+      "status": "required"
+    },
+    {
+      "regulation": "CRA",
+      "requirement": "Small business loan reported to community reinvestment record",
+      "status": "required"
+    },
+    {
+      "regulation": "UCC-1",
+      "requirement": "Fixture filing for collateral within 5 business days of close",
+      "status": "required"
+    },
+    {
+      "regulation": "SBA",
+      "requirement": "SBA 7(a) eligibility check for loans \u2264 $5M",
+      "status": "conditional"
+    },
+    {
+      "regulation": "FCRA",
+      "requirement": "Business Plaid account OAuth by authorized signer logged",
+      "status": "required"
+    },
+    {
+      "regulation": "BSA/AML",
+      "requirement": "FinCEN beneficial ownership CDD for entities \u2265 25% ownership",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7604",
+      "requirement": "Permissible purpose (underwriting) documented per transaction",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7615",
+      "requirement": "Adverse action notice identifies Plaid as data source and provides contact details",
+      "status": "required"
+    },
+    {
+      "regulation": "Plaid ToS",
+      "requirement": "End-user OAuth consent captured via Plaid Link; consent record retained 7 years",
+      "status": "required"
+    },
+    {
+      "regulation": "CCPA / CPRA",
+      "requirement": "Plaid bank data included in data-subject access and erasure workflows",
+      "status": "required"
+    },
+    {
+      "regulation": "SOC 2 Type II",
+      "requirement": "Plaid API credentials stored in secrets manager; not in code or config files",
+      "status": "required"
+    }
+  ],
+  "underwriting_data_sources": {
+    "primary": "Plaid (bank account cash-flow)",
+    "secondary": "Credit bureau (Experian / Equifax / TransUnion)",
+    "tertiary": "Alt-data (rent, utilities, mobile via ingestion-api)"
+  },
+  "plaid_features_used": [
+    "avg_monthly_inflow",
+    "avg_monthly_outflow",
+    "net_monthly_cash_flow",
+    "cash_flow_stability_score",
+    "nsf_count_90d",
+    "bank_account_age_months",
+    "plaid_income_estimate",
+    "income_source_count"
+  ]
+}

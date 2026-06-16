@@ -1,0 +1,88 @@
+entity: Transaction
+description: "A payment or financial event associated with a loan"
+sources:
+  - name: credit_risk.personal_loan_payments
+    join_key: payment_id
+    freshness_sla_hours: 1
+  - name: credit_risk.loan_monthly_ledger
+    join_key: loan_id
+    freshness_sla_hours: 4
+primary_key: payment_id
+attributes:
+  payment_id:
+    type: string
+    description: "Unique identifier for the payment"
+    mappings:
+      credit_risk.personal_loan_payments: payment_id
+      credit_risk.loan_monthly_ledger: payment_id
+  loan_id:
+    type: string
+    description: "Foreign key to Loan entity"
+    mappings:
+      credit_risk.personal_loan_payments: loan_id
+      credit_risk.loan_monthly_ledger: loan_id
+  customer_id:
+    type: string
+    description: "Foreign key to Customer entity"
+    mappings:
+      credit_risk.personal_loan_payments: customer_id
+  payment_date:
+    type: integer
+    description: "Date payment was made (INT64 nanoseconds epoch)"
+    mappings:
+      credit_risk.personal_loan_payments: payment_date
+      credit_risk.loan_monthly_ledger: payment_date
+  due_date:
+    type: integer
+    description: "Date payment was due (INT64 nanoseconds epoch)"
+    mappings:
+      credit_risk.personal_loan_payments: due_date
+  payment_amount:
+    type: decimal
+    description: "Total payment amount in USD"
+    mappings:
+      credit_risk.personal_loan_payments: payment_amount
+  principal_portion:
+    type: decimal
+    description: "Principal component of the payment"
+    mappings:
+      credit_risk.personal_loan_payments: principal_portion
+      credit_risk.loan_monthly_ledger: principal_portion
+  interest_portion:
+    type: decimal
+    description: "Interest component of the payment"
+    mappings:
+      credit_risk.personal_loan_payments: interest_portion
+      credit_risk.loan_monthly_ledger: interest_portion
+  days_late:
+    type: integer
+    description: "Number of days the payment was late"
+    mappings:
+      credit_risk.personal_loan_payments: days_late
+  remaining_balance:
+    type: decimal
+    description: "Remaining loan balance after payment"
+    mappings:
+      credit_risk.personal_loan_payments: remaining_balance
+      credit_risk.loan_monthly_ledger: remaining_balance
+  payment_status:
+    type: string
+    description: "Status of the payment"
+    allowed_values: [PAID, MISSED, PARTIAL, PENDING]
+    mappings:
+      credit_risk.personal_loan_payments: payment_status
+  is_prepayment:
+    type: boolean
+    description: "Whether this is a prepayment / early payoff"
+    mappings:
+      credit_risk.personal_loan_payments: is_prepayment
+  period_month:
+    type: integer
+    description: "Period month for ledger entries (INT64 nanoseconds epoch)"
+    mappings:
+      credit_risk.loan_monthly_ledger: period_month
+  net_interest_income:
+    type: decimal
+    description: "Net interest income for the period"
+    mappings:
+      credit_risk.loan_monthly_ledger: net_interest_income

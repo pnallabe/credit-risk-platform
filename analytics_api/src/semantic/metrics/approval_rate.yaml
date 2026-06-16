@@ -1,0 +1,39 @@
+metric: ApprovalRate
+description: "Percentage of loan applications that receive an APPROVE decision"
+category: underwriting
+unit: percentage
+requires:
+  entities: [Customer]
+  attributes:
+    - Customer.decision_outcome
+    - Customer.fico_tier
+    - Customer.product_type
+formula:
+  type: ratio
+  numerator:
+    filter: "decision_outcome = 'APPROVE'"
+    aggregation: "COUNTIF(decision_outcome = 'APPROVE')"
+  denominator:
+    filter: null
+    aggregation: "COUNT(*)"
+  multiply_by: 100
+variants: []
+dimensions:
+  - fico_tier
+  - dti_tier
+  - state
+  - channel
+  - product_type
+sla:
+  freshness_hours: 1
+  expected_range: [0.0, 100.0]
+preferred_source: credit_risk.personal_loan_applications
+bq_sql: |
+  SELECT
+    fico_tier,
+    COUNTIF(decision_outcome = 'APPROVE') AS approved_count,
+    COUNT(*) AS total_applications,
+    ROUND(SAFE_DIVIDE(COUNTIF(decision_outcome = 'APPROVE'), COUNT(*)) * 100, 2) AS approval_rate_pct
+  FROM `ai-risk-workflow.credit_risk.personal_loan_applications`
+  GROUP BY fico_tier
+  ORDER BY fico_tier

@@ -1,0 +1,214 @@
+{
+  "$defs": {
+    "ExplanationFactor": {
+      "properties": {
+        "direction": {
+          "title": "Direction",
+          "type": "string"
+        },
+        "feature": {
+          "title": "Feature",
+          "type": "string"
+        },
+        "shap_value": {
+          "title": "Shap Value",
+          "type": "number"
+        }
+      },
+      "required": [
+        "feature",
+        "shap_value",
+        "direction"
+      ],
+      "title": "ExplanationFactor",
+      "type": "object"
+    }
+  },
+  "description": "Full decision response including explanation and audit metadata.",
+  "properties": {
+    "adverse_action_body": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Adverse Action Body"
+    },
+    "adverse_action_reasons": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Adverse Action Reasons"
+    },
+    "alternative_structures": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Alternative Structures"
+    },
+    "applicant_narrative": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Applicant Narrative"
+    },
+    "application_id": {
+      "title": "Application Id",
+      "type": "string"
+    },
+    "audit_log_id": {
+      "title": "Audit Log Id",
+      "type": "string"
+    },
+    "conditions": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "object"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Conditions"
+    },
+    "decision": {
+      "title": "Decision",
+      "type": "string"
+    },
+    "decision_latency_ms": {
+      "title": "Decision Latency Ms",
+      "type": "integer"
+    },
+    "explanation": {
+      "items": {
+        "$ref": "#/$defs/ExplanationFactor"
+      },
+      "title": "Explanation",
+      "type": "array"
+    },
+    "explanation_narrative": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Explanation Narrative"
+    },
+    "fraud_probability": {
+      "title": "Fraud Probability",
+      "type": "number"
+    },
+    "loan_terms": {
+      "title": "Loan Terms",
+      "type": "object"
+    },
+    "notice_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notice Id"
+    },
+    "pd_score": {
+      "title": "Pd Score",
+      "type": "number"
+    },
+    "qualitative_assessment": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Qualitative Assessment"
+    },
+    "reason_codes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Reason Codes",
+      "type": "array"
+    },
+    "recommended_rate": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Recommended Rate"
+    },
+    "risk_narrative_markdown": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Risk Narrative Markdown"
+    }
+  },
+  "required": [
+    "application_id",
+    "decision",
+    "recommended_rate",
+    "loan_terms",
+    "reason_codes",
+    "explanation",
+    "decision_latency_ms",
+    "audit_log_id",
+    "fraud_probability",
+    "pd_score"
+  ],
+  "title": "DecisionResponse",
+  "type": "object"
+}

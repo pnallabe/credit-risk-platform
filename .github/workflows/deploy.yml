@@ -1,0 +1,187 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+
+env:
+  REGION: us-central1
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+
+jobs:
+  deploy_staging:
+    name: Deploy to staging
+    runs-on: ubuntu-latest
+    environment: staging
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'staging'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Build & push ingestion-api
+        run: |
+          docker build \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/ingestion-api:${{ github.sha }} \
+            -f ingestion-api/deployment/Dockerfile .
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/ingestion-api:${{ github.sha }}
+
+      - name: Build & push decision-api
+        run: |
+          docker build \
+            -t ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/decision-api:${{ github.sha }} \
+            -f decision-api/Dockerfile .
+          docker push ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/decision-api:${{ github.sha }}
+
+      - name: Deploy ingestion-api to Cloud Run (staging)
+        run: |
+          gcloud run deploy ingestion-api-staging \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/ingestion-api:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars DATABASE_URL=${{ secrets.STAGING_DATABASE_URL }},JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }} \
+            --memory 512Mi \
+            --cpu 1 \
+            --min-instances 0 \
+            --max-instances 5
+
+      - name: Deploy decision-api to Cloud Run (staging)
+        run: |
+          gcloud run deploy decision-api-staging \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/decision-api:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --set-env-vars DATABASE_URL=${{ secrets.STAGING_DATABASE_URL }},JWT_SECRET=${{ secrets.STAGING_JWT_SECRET }} \
+            --memory 1Gi \
+            --cpu 2 \
+            --min-instances 0 \
+            --max-instances 10
+
+      - name: Smoke tests (staging)
+        run: |
+          INGESTION_URL=$(gcloud run services describe ingestion-api-staging \
+            --region ${{ env.REGION }} --format='value(status.url)')
+          DECISION_URL=$(gcloud run services describe decision-api-staging \
+            --region ${{ env.REGION }} --format='value(status.url)')
+
+          echo "Checking ingestion API health..."
+          curl -sf "${INGESTION_URL}/health" | grep -q '"status"'
+
+          echo "Checking decision API health..."
+          curl -sf \
+            -H "Authorization: Bearer ${{ secrets.STAGING_JWT_SECRET }}" \
+            "${DECISION_URL}/v1/health" | grep -q '"status"'
+
+          echo "All smoke tests passed."
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_COLOR: danger
+          SLACK_TITLE: "Deploy FAILED — staging"
+          SLACK_MESSAGE: >
+            Commit ${{ github.sha }} by ${{ github.actor }} failed to deploy.
+            See: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+  deploy_production:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    environment: production
+    needs: deploy_staging
+    if: |
+      (github.ref == 'refs/heads/main' && needs.deploy_staging.result == 'success') ||
+      github.event.inputs.environment == 'production'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
+
+      - name: Deploy ingestion-api to Cloud Run (production)
+        run: |
+          gcloud run deploy ingestion-api \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/ingestion-api:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars DATABASE_URL=${{ secrets.PROD_DATABASE_URL }},JWT_SECRET=${{ secrets.PROD_JWT_SECRET }} \
+            --memory 1Gi \
+            --cpu 2 \
+            --min-instances 1 \
+            --max-instances 20
+
+      - name: Deploy decision-api to Cloud Run (production)
+        run: |
+          gcloud run deploy decision-api \
+            --image ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/lending/decision-api:${{ github.sha }} \
+            --region ${{ env.REGION }} \
+            --platform managed \
+            --no-allow-unauthenticated \
+            --set-env-vars DATABASE_URL=${{ secrets.PROD_DATABASE_URL }},JWT_SECRET=${{ secrets.PROD_JWT_SECRET }} \
+            --memory 2Gi \
+            --cpu 4 \
+            --min-instances 1 \
+            --max-instances 50
+
+      - name: Smoke tests (production)
+        run: |
+          INGESTION_URL=$(gcloud run services describe ingestion-api \
+            --region ${{ env.REGION }} --format='value(status.url)')
+          DECISION_URL=$(gcloud run services describe decision-api \
+            --region ${{ env.REGION }} --format='value(status.url)')
+
+          curl -sf "${INGESTION_URL}/health" | grep -q '"status"'
+          curl -sf \
+            -H "Authorization: Bearer ${{ secrets.PROD_JWT_SECRET }}" \
+            "${DECISION_URL}/v1/health" | grep -q '"status"'
+
+      - name: Notify Slack on success
+        if: success()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_COLOR: good
+          SLACK_TITLE: "Deploy SUCCESS — production"
+          SLACK_MESSAGE: >
+            Commit ${{ github.sha }} deployed to production by ${{ github.actor }}.
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_COLOR: danger
+          SLACK_TITLE: "Deploy FAILED — production"
+          SLACK_MESSAGE: >
+            PRODUCTION deploy of ${{ github.sha }} FAILED.
+            Immediate attention required.
+            See: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

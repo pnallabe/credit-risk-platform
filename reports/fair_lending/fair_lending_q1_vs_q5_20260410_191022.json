@@ -1,0 +1,43 @@
+{
+  "dir_score": 0.4283,
+  "dir_flag": true,
+  "protected_group": "Q1_LOW_INCOME",
+  "control_group": "Q5_HIGH_INCOME",
+  "protected_approval_rate": 0.2835808512403551,
+  "control_approval_rate": 0.6621180410213479,
+  "approval_parity_p_value": 0.0,
+  "approval_parity_flag": true,
+  "geographic_flags": [
+    "MD",
+    "MI"
+  ],
+  "state_approval_rates": {
+    "AZ": 0.4884,
+    "CA": 0.4935,
+    "FL": 0.4768,
+    "GA": 0.4861,
+    "IL": 0.4762,
+    "IN": 0.4582,
+    "MA": 0.476,
+    "MD": 0.4473,
+    "MI": 0.4406,
+    "MO": 0.4706,
+    "NC": 0.4621,
+    "NJ": 0.4794,
+    "NY": 0.4799,
+    "OH": 0.4666,
+    "PA": 0.466,
+    "TN": 0.4806,
+    "TX": 0.4669,
+    "VA": 0.4838,
+    "WA": 0.4717,
+    "WI": 0.4701
+  },
+  "summary_text": "Fair Lending Analysis \u2014 2026-04-10\nTotal Decisions: 23998 | Approved: 11327\n\nDisparate Impact Ratio (DIR): 0.4283\n  Protected group (Q1_LOW_INCOME): 28.4%\n  Control group (Q5_HIGH_INCOME): 66.2%\n  Status: \u26a0 FLAG (DIR < 0.80)\n\nApproval Parity (Chi-squared p-value): 0.0\n  Status: \u26a0 FLAG (p < 0.05)\n\nGeographic flags (approval < 1.5\u03c3 below mean): MD, MI",
+  "report_timestamp": "2026-04-10T19:10:22.346135+00:00",
+  "n_total": 23998,
+  "n_approved": 11327,
+  "proxy_methodology": "self_reported",
+  "proxy_applied": false,
+  "weighted_dir_calculation": null
+}

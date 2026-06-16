@@ -1,0 +1,74 @@
+entity: CreditCardTransaction
+description: "An individual card transaction — purchase, cash advance, or balance transfer"
+sources:
+  - name: credit_risk_model_dev.cc_transactions
+    join_key: transaction_id
+    freshness_sla_hours: 1
+primary_key: transaction_id
+attributes:
+  transaction_id:
+    type: string
+    description: "Unique identifier for the transaction"
+    mappings:
+      credit_risk_model_dev.cc_transactions: transaction_id
+  origination_id:
+    type: string
+    description: "Foreign key to CreditCardAccount (origination_id)"
+    mappings:
+      credit_risk_model_dev.cc_transactions: origination_id
+  customer_id:
+    type: string
+    description: "Foreign key to the card holder"
+    mappings:
+      credit_risk_model_dev.cc_transactions: customer_id
+  transaction_date:
+    type: date
+    description: "Date the transaction was posted"
+    mappings:
+      credit_risk_model_dev.cc_transactions: transaction_date
+  year:
+    type: integer
+    description: "Transaction year"
+    mappings:
+      credit_risk_model_dev.cc_transactions: year
+  month:
+    type: integer
+    description: "Transaction month (1–12)"
+    mappings:
+      credit_risk_model_dev.cc_transactions: month
+  amount_usd:
+    type: decimal
+    description: "Transaction amount in USD"
+    mappings:
+      credit_risk_model_dev.cc_transactions: amount_usd
+  transaction_type:
+    type: string
+    description: "Type of transaction"
+    allowed_values: [PURCHASE, CASH_ADVANCE, BALANCE_TRANSFER, PAYMENT, FEE, REFUND]
+    mappings:
+      credit_risk_model_dev.cc_transactions: transaction_type
+  merchant_category_code:
+    type: string
+    description: "MCC code for the merchant"
+    mappings:
+      credit_risk_model_dev.cc_transactions: merchant_category_code
+  merchant_name:
+    type: string
+    description: "Name of the merchant"
+    mappings:
+      credit_risk_model_dev.cc_transactions: merchant_name
+  is_international:
+    type: boolean
+    description: "Whether the transaction was made outside the US"
+    mappings:
+      credit_risk_model_dev.cc_transactions: is_international
+  is_online:
+    type: boolean
+    description: "Whether the transaction was made online"
+    mappings:
+      credit_risk_model_dev.cc_transactions: is_online
+  is_contactless:
+    type: boolean
+    description: "Whether contactless/tap-to-pay was used"
+    mappings:
+      credit_risk_model_dev.cc_transactions: is_contactless

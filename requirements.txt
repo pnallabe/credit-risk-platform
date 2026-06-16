@@ -13,3 +13,57 @@ streamlit
 requests
 python-dotenv
 pytest
+
+# Phase 1 — Data Foundation
+faker
+pyarrow
+sqlalchemy[asyncio]>=2.0
+asyncpg
+psycopg2-binary
+
+# Phase 2 — Feature Engineering & Feature Store
+aiosqlite
+pytest-asyncio
+
+# Phase 3 — Machine Learning Models
+lightgbm
+optuna
+scipy
+matplotlib
+plotly
+
+# GCP — data pipeline
+google-cloud-storage>=2.16
+google-auth>=2.29
+
+# Security / developer tooling
+pre-commit>=3.7
+detect-secrets>=1.5
+google-cloud-bigquery>=3.11
+
+# P2 — Adverse Action PDF generation
+reportlab>=4.0.0
+
+# P2 — PDF testing (byte-level validation); move to requirements-dev.txt if desired
+pypdf>=3.0.0
+
+# P2 — OpenTelemetry distributed tracing (PROMPT-05)
+opentelemetry-sdk>=1.24.0
+opentelemetry-api>=1.24.0
+opentelemetry-exporter-otlp-proto-http>=1.24.0
+opentelemetry-instrumentation-fastapi>=0.45b0
+
+# P2 — OpenAPI contract tests (PROMPT-06)
+jsonschema>=4.21.0
+
+# P3 — Prometheus metrics sink (PROMPT-09)
+prometheus-client>=0.20.0
+
+# GAP-24 — GraphQL Analytics API
+strawberry-graphql[fastapi]>=0.220.0
+
+# GAP-25 — Policy Version RSA Signing
+cryptography>=42.0.0
+
+# Secrets Manager
+google-cloud-secret-manager>=2.19.0

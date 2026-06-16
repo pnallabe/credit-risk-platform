@@ -1,0 +1,82 @@
+{
+  "tenant_id": "plaid_data",
+  "product_type": "SMALL_BUSINESS_LOAN",
+  "generated_at": "2026-06-04T19:55:53.998680+00:00",
+  "policy_version": "v1",
+  "policy_parameters": {
+    "product_type": "SMALL_BUSINESS_LOAN",
+    "pd_threshold_approve": 0.08,
+    "pd_threshold_refer": 0.16,
+    "fraud_reject_threshold": 0.55,
+    "fraud_review_threshold": 0.3,
+    "max_dti": 0.6,
+    "min_open_accounts": 0,
+    "min_loan_amount_usd": 5000.0,
+    "max_loan_amount_usd": 5000000.0,
+    "base_apr": 7.5,
+    "max_apr": 40.0,
+    "required_features": [
+      "credit_score",
+      "annual_revenue",
+      "years_in_business",
+      "debt_service_coverage_ratio",
+      "business_type"
+    ],
+    "extra_rules": [
+      "years_in_business_min_1",
+      "dscr_min_1_25",
+      "personal_guarantee_required_under_250k",
+      "cra_small_business_tracking"
+    ],
+    "description": "Small business term loan, line of credit, or SBA-guaranteed loan",
+    "regulatory_notes": "ECOA / Reg B applies. CRA small business activity reporting. Dodd-Frank \u00a71071 small business lending data collection (CFPB Final Rule 2023). SBA 7(a) / 504 programs have additional eligibility and use-of-proceeds rules."
+  },
+  "regulatory_compliance_checklist": [
+    {
+      "regulation": "ECOA / Reg B",
+      "requirement": "Business credit adverse action within 30 days",
+      "status": "required"
+    },
+    {
+      "regulation": "CRA",
+      "requirement": "Small business reporting",
+      "status": "required"
+    },
+    {
+      "regulation": "BSA/AML",
+      "requirement": "FinCEN CDD / beneficial ownership verification",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7604",
+      "requirement": "Permissible purpose (underwriting) documented per transaction",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7615",
+      "requirement": "Adverse action notice identifies Plaid as data source and provides contact details",
+      "status": "required"
+    },
+    {
+      "regulation": "Plaid ToS",
+      "requirement": "End-user OAuth consent captured via Plaid Link; consent record retained 7 years",
+      "status": "required"
+    },
+    {
+      "regulation": "CCPA / CPRA",
+      "requirement": "Plaid bank data included in data-subject access and erasure workflows",
+      "status": "required"
+    },
+    {
+      "regulation": "SOC 2 Type II",
+      "requirement": "Plaid API credentials stored in secrets manager; not in code or config files",
+      "status": "required"
+    }
+  ],
+  "underwriting_data_sources": {
+    "primary": "Plaid (bank account cash-flow)",
+    "secondary": "Credit bureau (Experian / Equifax / TransUnion)",
+    "tertiary": "Alt-data (rent, utilities, mobile via ingestion-api)"
+  },
+  "plaid_features_used": []
+}

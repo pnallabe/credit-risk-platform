@@ -1,0 +1,32 @@
+metric: UtilizationRate
+description: "Average credit utilization ratio across revolving accounts"
+category: behavior_indicator
+unit: percentage
+requires:
+  entities: [Loan]
+  attributes:
+    - Loan.loan_id
+formula:
+  type: average
+  numerator:
+    filter: null
+    aggregation: "AVG(utilization_rate)"
+  denominator:
+    filter: null
+    aggregation: null
+  multiply_by: 100
+variants: []
+dimensions:
+  - product_type
+  - period_month
+sla:
+  freshness_hours: 4
+  expected_range: [0.0, 100.0]
+preferred_source: credit_risk.cc_account_monthly_economics  # also in CreditCardStatement entity
+bq_sql: |
+  SELECT
+    DATE_TRUNC(TIMESTAMP_MICROS(CAST(period_month / 1000 AS INT64)), MONTH) AS period,
+    ROUND(AVG(utilization_rate) * 100, 2) AS avg_utilization_pct
+  FROM `ai-risk-workflow.credit_risk.cc_account_monthly_economics`
+  GROUP BY period
+  ORDER BY period DESC

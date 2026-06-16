@@ -1,0 +1,97 @@
+entity: Customer
+description: "A borrower who has applied for or holds a credit product"
+sources:
+  - name: credit_risk.personal_loan_applications
+    join_key: customer_id
+    freshness_sla_hours: 1
+  - name: credit_risk.personal_loans_funded
+    join_key: customer_id
+    freshness_sla_hours: 1
+  - name: credit_risk.decision_registry
+    join_key: customer_id
+    freshness_sla_hours: 1
+primary_key: customer_id
+attributes:
+  customer_id:
+    type: string
+    description: "Unique identifier for the customer"
+    mappings:
+      credit_risk.personal_loan_applications: customer_id
+      credit_risk.personal_loans_funded: customer_id
+      credit_risk.decision_registry: customer_id
+  fico_score:
+    type: integer
+    description: "FICO credit score at application time"
+    mappings:
+      credit_risk.personal_loan_applications: fico_score
+      credit_risk.personal_loans_funded: fico_score_at_origination
+      credit_risk.decision_registry: credit_score_at_decision
+  annual_income:
+    type: decimal
+    description: "Annual income in USD"
+    mappings:
+      credit_risk.personal_loan_applications: annual_income
+      credit_risk.personal_loans_funded: annual_income_at_origination
+  dti:
+    type: decimal
+    description: "Debt-to-income ratio"
+    mappings:
+      credit_risk.personal_loan_applications: dti
+      credit_risk.personal_loans_funded: dti_at_origination
+  employment_status:
+    type: string
+    description: "Employment status of the applicant"
+    mappings:
+      credit_risk.personal_loan_applications: employment_status
+      credit_risk.personal_loans_funded: employment_status
+  state:
+    type: string
+    description: "State of residence (2-letter abbreviation)"
+    mappings:
+      credit_risk.personal_loan_applications: state
+      credit_risk.personal_loans_funded: state
+  channel:
+    type: string
+    description: "Origination channel"
+    allowed_values: [ONLINE, BRANCH, PARTNER, MOBILE]
+    mappings:
+      credit_risk.personal_loan_applications: channel
+      credit_risk.personal_loans_funded: channel
+      credit_risk.decision_registry: channel
+  fico_tier:
+    type: string
+    description: "FICO score tier (Prime/NearPrime/Subprime)"
+    mappings:
+      credit_risk.personal_loan_applications: fico_tier
+      credit_risk.personal_loans_funded: fico_tier
+  dti_tier:
+    type: string
+    description: "DTI tier bucket"
+    mappings:
+      credit_risk.personal_loan_applications: dti_tier
+      credit_risk.personal_loans_funded: dti_tier
+  pd_score:
+    type: decimal
+    description: "Probability of default score (0-1)"
+    mappings:
+      credit_risk.personal_loan_applications: pd_score
+      credit_risk.decision_registry: pd_score
+  fraud_score:
+    type: decimal
+    description: "Fraud risk score (0-1)"
+    mappings:
+      credit_risk.personal_loan_applications: fraud_score
+      credit_risk.decision_registry: fraud_score
+  decision_outcome:
+    type: string
+    description: "Underwriting decision"
+    allowed_values: [APPROVE, DECLINE, REFER]
+    mappings:
+      credit_risk.personal_loan_applications: decision_outcome
+      credit_risk.decision_registry: decision_outcome
+  applied_at:
+    type: integer
+    description: "Application timestamp (INT64 nanoseconds epoch)"
+    mappings:
+      credit_risk.personal_loan_applications: applied_at
+      credit_risk.decision_registry: decision_timestamp
