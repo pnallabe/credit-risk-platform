@@ -1,0 +1,42 @@
+name: Contract Tests & eval() Gate
+
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  eval-gate:
+    name: "eval() grep gate"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check no eval() in production code paths
+        run: make check-no-eval
+
+  contract-tests:
+    name: "OpenAPI contract tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install "python-jose[cryptography]" aiofiles python-multipart pytest-asyncio aiosqlite jsonschema
+
+      - name: Run OpenAPI contract tests
+        env:
+          JWT_SECRET: ci-test-secret
+          BORROWER_JWT_SECRET: ci-borrower-secret
+          DATABASE_URL: sqlite+aiosqlite:///./ci_test_contracts.db
+          CORS_ALLOWED_ORIGINS: http://localhost
+        run: make contract-tests

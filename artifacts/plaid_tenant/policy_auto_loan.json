@@ -1,0 +1,85 @@
+{
+  "tenant_id": "plaid_data",
+  "product_type": "AUTO_LOAN",
+  "generated_at": "2026-06-04T19:55:53.997826+00:00",
+  "policy_version": "v1",
+  "policy_parameters": {
+    "product_type": "AUTO_LOAN",
+    "pd_threshold_approve": 0.07,
+    "pd_threshold_refer": 0.14,
+    "fraud_reject_threshold": 0.6,
+    "fraud_review_threshold": 0.3,
+    "max_dti": 0.55,
+    "min_open_accounts": 0,
+    "min_loan_amount_usd": 3000.0,
+    "max_loan_amount_usd": 120000.0,
+    "base_apr": 5.99,
+    "max_apr": 24.99,
+    "required_features": [
+      "credit_score",
+      "debt_to_income",
+      "vehicle_ltv",
+      "vehicle_age_years"
+    ],
+    "extra_rules": [
+      "ltv_check_max_125pct",
+      "vehicle_age_max_10_years",
+      "odometer_max_150k"
+    ],
+    "description": "Retail auto loan (direct and dealer-originated)",
+    "regulatory_notes": "Subject to TILA Reg Z, ECOA Reg B, FCRA. FTC Holder Rule applies for dealer-originated loans. State lemon law compliance required."
+  },
+  "regulatory_compliance_checklist": [
+    {
+      "regulation": "TILA / Reg Z",
+      "requirement": "Finance charge, APR, and payment schedule disclosed",
+      "status": "required"
+    },
+    {
+      "regulation": "FTC Holder Rule",
+      "requirement": "FTC notice in dealer-originated contracts",
+      "status": "conditional"
+    },
+    {
+      "regulation": "ECOA / Reg B",
+      "requirement": "Adverse action if declined",
+      "status": "required"
+    },
+    {
+      "regulation": "State Lemon Law",
+      "requirement": "State-specific lemon law compliance per origination state",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7604",
+      "requirement": "Permissible purpose (underwriting) documented per transaction",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7615",
+      "requirement": "Adverse action notice identifies Plaid as data source and provides contact details",
+      "status": "required"
+    },
+    {
+      "regulation": "Plaid ToS",
+      "requirement": "End-user OAuth consent captured via Plaid Link; consent record retained 7 years",
+      "status": "required"
+    },
+    {
+      "regulation": "CCPA / CPRA",
+      "requirement": "Plaid bank data included in data-subject access and erasure workflows",
+      "status": "required"
+    },
+    {
+      "regulation": "SOC 2 Type II",
+      "requirement": "Plaid API credentials stored in secrets manager; not in code or config files",
+      "status": "required"
+    }
+  ],
+  "underwriting_data_sources": {
+    "primary": "Plaid (bank account cash-flow)",
+    "secondary": "Credit bureau (Experian / Equifax / TransUnion)",
+    "tertiary": "Alt-data (rent, utilities, mobile via ingestion-api)"
+  },
+  "plaid_features_used": []
+}

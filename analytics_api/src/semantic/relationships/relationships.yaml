@@ -1,0 +1,27 @@
+relationships:
+  - name: customer_has_loan
+    from_entity: Customer
+    from_attribute: customer_id
+    to_entity: Loan
+    to_attribute: customer_id
+    cardinality: one_to_many
+    join_type: LEFT
+    description: "A customer may have zero or more loans"
+
+  - name: loan_has_transactions
+    from_entity: Loan
+    from_attribute: loan_id
+    to_entity: Transaction
+    to_attribute: loan_id
+    cardinality: one_to_many
+    join_type: LEFT
+    description: "A loan may have many payment transactions"
+
+  - name: customer_has_transactions
+    from_entity: Customer
+    from_attribute: customer_id
+    to_entity: Transaction
+    to_attribute: customer_id
+    cardinality: one_to_many
+    join_type: LEFT
+    description: "A customer may have many transactions directly"

@@ -1,0 +1,358 @@
+# ---------------------------------------------------------------------------
+# HelixDecision — Full Stack (Multi-Domain)
+# ---------------------------------------------------------------------------
+# Services:
+#   postgres              :5432  — Loans DB (loan apps, funded loans, customers)
+#   postgres-transactions :5433  — Transactions DB (bank accounts, payments, fraud)
+#   postgres-cards        :5434  — Credit Cards DB (card accounts, txns, statements)
+#   redis                 :6379  — Cache / rate-limit store
+#   mlflow                :5000  — ML experiment tracking
+#   ingestion-api         :8080  — Data ingestion (FastAPI)
+#   decision-api          :8081  — Underwriting engine (FastAPI)
+#   ai-agent              :8082  — LangChain AI agent (FastAPI + SSE)
+#   dashboard             :8501  — Legacy Streamlit dashboard
+#   applicant-portal      :3000  — Loan application portal (Next.js)
+#   analytics-dashboard   :3001  — Internal analytics (Next.js)
+#
+# Connection strings:
+#   Loans:        postgresql://credit_user:changeme@localhost:5432/credit_risk_loans
+#   Transactions: postgresql://credit_user:changeme@localhost:5433/credit_risk_transactions
+#   Cards:        postgresql://credit_user:changeme@localhost:5434/credit_risk_cards
+#
+# Usage:
+#   make dev           → docker compose up --build
+#   make dev-detach    → docker compose up --build -d
+#   make down          → docker compose down -v
+#   make logs          → docker compose logs -f
+#   make db-init-all   → initialise all 3 domain schemas
+# ---------------------------------------------------------------------------
+
+x-common-env: &common-env
+  POSTGRES_USER: ${POSTGRES_USER:-credit_user}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+  JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+
+x-postgres-healthcheck: &pg-healthcheck
+  interval: 10s
+  timeout: 5s
+  retries: 5
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — LOANS DB  (port 5432)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: crp_postgres_loans
+    environment:
+      <<: *common-env
+      POSTGRES_DB: ${LOANS_DB:-credit_risk_loans}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_loans_data:/var/lib/postgresql/data
+      - ./db/init_dbs.sh:/docker-entrypoint-initdb.d/01_init_dbs.sh:ro
+      - ./db/schema.sql:/tmp/schemas/schema.sql:ro
+      - ./db/schema_loans.sql:/tmp/schemas/schema_loans.sql:ro
+      - ./db/migrations/002_agent_sessions.sql:/tmp/schemas/002_agent_sessions.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${LOANS_DB:-credit_risk_loans}"]
+      <<: *pg-healthcheck
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — TRANSACTIONS DB  (port 5433)
+  # ---------------------------------------------------------------------------
+  postgres-transactions:
+    image: postgres:16-alpine
+    container_name: crp_postgres_transactions
+    environment:
+      <<: *common-env
+      POSTGRES_DB: ${TRANSACTIONS_DB:-credit_risk_transactions}
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_transactions_data:/var/lib/postgresql/data
+      - ./db/schema_transactions.sql:/docker-entrypoint-initdb.d/01_transactions_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${TRANSACTIONS_DB:-credit_risk_transactions}"]
+      <<: *pg-healthcheck
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — CREDIT CARDS DB  (port 5434)
+  # ---------------------------------------------------------------------------
+  postgres-cards:
+    image: postgres:16-alpine
+    container_name: crp_postgres_cards
+    environment:
+      <<: *common-env
+      POSTGRES_DB: ${CARDS_DB:-credit_risk_cards}
+    ports:
+      - "5434:5432"
+    volumes:
+      - postgres_cards_data:/var/lib/postgresql/data
+      - ./db/schema_credit_cards.sql:/docker-entrypoint-initdb.d/01_cards_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-credit_user} -d ${CARDS_DB:-credit_risk_cards}"]
+      <<: *pg-healthcheck
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis — rate-limit backing store & session cache
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: crp_redis_cache
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # MLflow Tracking Server
+  # ---------------------------------------------------------------------------
+  mlflow:
+    image: python:3.11-slim
+    container_name: crp_mlflow_server
+    command: >
+      bash -c "pip install mlflow psycopg2-binary -q &&
+               mlflow server
+               --backend-store-uri postgresql://${POSTGRES_USER:-credit_user}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-credit_risk}
+               --default-artifact-root /mlflow/artifacts
+               --host 0.0.0.0
+               --port 5000"
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow_artifacts:/mlflow/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *common-env
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Ingestion API  (port 8080)
+  # ---------------------------------------------------------------------------
+  ingestion-api:
+    build:
+      context: .
+      dockerfile: ingestion-api/deployment/Dockerfile
+    container_name: crp_ingestion_api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-credit_user}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-credit_risk}
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      # P1.2: Redis for ingestion deduplication
+      REDIS_URL: redis://redis:6379/1
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data:ro
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=4)\" 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Decision API  (port 8081)
+  # ---------------------------------------------------------------------------
+  decision-api:
+    build:
+      context: .
+      dockerfile: decision-api/Dockerfile
+    container_name: crp_decision_api
+    env_file: .env
+    environment:
+      DATABASE_URL: sqlite+aiosqlite:////app/data/decision_audit.db
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      FRAUD_MODEL_PATH: /app/models/fraud_detection/fraud_model_v1.pkl
+      RISK_MODEL_PATH: /app/models/credit_risk/risk_model_v1.pkl
+      # P1.1: Redis for rate limiting + idempotency
+      REDIS_URL: redis://redis:6379/0
+      RATE_LIMIT_DECISIONS: ${RATE_LIMIT_DECISIONS:-100}
+      RATE_LIMIT_BATCH: ${RATE_LIMIT_BATCH:-10}
+      RATE_LIMIT_WINDOW: ${RATE_LIMIT_WINDOW:-60}
+      IDEMPOTENCY_TTL_SECONDS: ${IDEMPOTENCY_TTL_SECONDS:-86400}
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      - ./models:/app/models:ro
+      - decision_data:/app/data
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8081/v1/health', timeout=4)\" 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # AI Agent  (port 8082)
+  # ---------------------------------------------------------------------------
+  ai-agent:
+    build:
+      context: .
+      dockerfile: ai-agent/Dockerfile
+    container_name: crp_ai_agent
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-credit_user}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-credit_risk}
+      AGENT_API_URL: http://ai-agent:8082
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local-demo-api-key-for-ui-testing}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+      RATE_LIMIT: ${AGENT_RATE_LIMIT:-20/minute}
+      DASHBOARD_ORIGIN: http://analytics-dashboard:3001
+    ports:
+      - "8082:8082"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - decision_data:/app/data
+      - ./ai-agent/config:/app/config:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8082/health', timeout=4)\" 2>/dev/null || exit 1"]
+      interval: 15s
+      timeout: 8s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # AI Agent Scheduler  (sidecar — runs alongside the agent)
+  # ---------------------------------------------------------------------------
+  ai-agent-scheduler:
+    build:
+      context: .
+      dockerfile: ai-agent/Dockerfile
+    container_name: crp_ai_agent_scheduler
+    command: ["python", "src/scheduler.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-credit_user}:${POSTGRES_PASSWORD:-changeme}@postgres:5432/${POSTGRES_DB:-credit_risk}
+      AGENT_API_URL: http://ai-agent:8082
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-sk-local-demo-api-key-for-ui-testing}
+      DRIFT_PSI_THRESHOLD: ${DRIFT_PSI_THRESHOLD:-0.25}
+    depends_on:
+      ai-agent:
+        condition: service_healthy
+    volumes:
+      - decision_data:/app/data
+      - ./ai-agent/config:/app/config:ro
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Streamlit Dashboard  (port 8501 — legacy)
+  # ---------------------------------------------------------------------------
+  dashboard:
+    image: python:3.11-slim
+    container_name: crp_streamlit_dashboard
+    command: >
+      bash -c "pip install streamlit plotly pandas numpy requests -q &&
+               streamlit run dashboard/app.py
+               --server.port=8501
+               --server.address=0.0.0.0
+               --server.headless=true"
+    ports:
+      - "8501:8501"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+    environment:
+      DECISION_API_URL: http://decision-api:8081
+    volumes:
+      - .:/app
+    working_dir: /app
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Applicant Portal  (port 3000 — public-facing Next.js)
+  # ---------------------------------------------------------------------------
+  applicant-portal:
+    build:
+      context: .
+      dockerfile: ui/applicant-portal/Dockerfile
+      args:
+        NEXT_PUBLIC_DECISION_API_URL: http://decision-api:8081
+    container_name: crp_applicant_portal
+    environment:
+      NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-nextauth-secret}
+      DECISION_API_URL: http://decision-api:8081
+    ports:
+      - "3000:3000"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health 2>/dev/null || curl -sf http://localhost:3000 || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Analytics Dashboard  (port 3001 — internal role-based Next.js)
+  # ---------------------------------------------------------------------------
+  analytics-dashboard:
+    build:
+      context: .
+      dockerfile: ui/analytics-dashboard/Dockerfile
+      args:
+        NEXT_PUBLIC_DECISION_API_URL: http://decision-api:8081
+        NEXT_PUBLIC_AGENT_API_URL: http://ai-agent:8082
+    container_name: crp_analytics_dashboard
+    environment:
+      NEXTAUTH_URL: ${ANALYTICS_NEXTAUTH_URL:-http://localhost:3001}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-dev-nextauth-secret}
+      DECISION_API_URL: http://decision-api:8081
+      AGENT_API_URL: http://ai-agent:8082
+    ports:
+      - "3001:3001"
+    depends_on:
+      decision-api:
+        condition: service_healthy
+      ai-agent:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/api/health 2>/dev/null || curl -sf http://localhost:3001 || exit 0"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+# ---------------------------------------------------------------------------
+# Volumes
+# ---------------------------------------------------------------------------
+volumes:
+  postgres_loans_data:
+  postgres_transactions_data:
+  postgres_cards_data:
+  redis_data:
+  mlflow_artifacts:
+  decision_data:

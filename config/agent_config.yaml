@@ -1,0 +1,233 @@
+# =============================================================================
+# Agent-Level Configuration
+# All runtime thresholds and tuning knobs live here — no hardcoding in code.
+# =============================================================================
+
+# ── Credit Analyst Agent ──────────────────────────────────────────────────────
+credit_analyst:
+  enabled: true
+  # Minimum collateral coverage ratio before COLLATERAL_SHORTFALL flag fires
+  collateral_shortfall_threshold: 0.80
+  # Cash advance as a fraction of credit limit before HIGH_CASH_ADVANCE flag fires
+  high_cash_advance_ratio: 0.30
+  # Number of missed payments in last 12 months before EXCESSIVE_MISSED_PMTS fires
+  missed_payment_threshold: 2
+
+# ── Data Ingestion Agent ─────────────────────────────────────────────────────
+data_ingestion:
+  schema_version: "1.0.0"
+  required_fields:
+    - application_id
+    - loan_amount
+    - loan_purpose
+    - loan_term_months
+    - annual_income
+    - employment_status
+  # Allowed loan amount range (USD)
+  loan_amount_min: 500
+  loan_amount_max: 300000
+  # Income plausibility gate
+  annual_income_min: 1200
+  annual_income_max: 5000000
+  # DTI hard cap for validation warning (not rejection)
+  dti_warning_threshold: 0.65
+  # How many consecutive validation failures before the batch is quarantined
+  quarantine_error_threshold_pct: 0.10
+  # Thin-file flag: applicant treated as thin-file when credit_score is null
+  thin_file_missing_fields:
+    - credit_score
+    - num_open_accounts
+    - months_since_last_delinquency
+
+# ── Feature Engineering Agent ────────────────────────────────────────────────
+feature_engineering:
+  version: "1.0.0"
+  # Income fraction used as credit capacity proxy
+  income_capacity_fraction: 0.40
+  # Months cap for employment tenure sigmoid
+  tenure_sigmoid_max_months: 60
+  # Thin-file alt-data weights (additive to income_stability_score)
+  thin_file_boost:
+    rent_payment_weight: 0.05      # per 12 months of on-time rent
+    utility_payment_weight: 0.03   # per 12 months of on-time utilities
+    mobile_data_weight: 0.10       # direct weight on mobile_data_score
+    bank_age_weight: 0.04          # per 12 months of bank account age
+  # Clip bounds for engineered features
+  clip_bounds:
+    credit_utilization: [0.0, 1.0]
+    repayment_capacity: [0.0, 1.0]
+    derogatory_penalty: [0.0, 0.50]
+
+# ── Risk Modeling Agent ──────────────────────────────────────────────────────
+risk_modeling:
+  credit_risk:
+    model_path: "models/credit_risk/risk_model_v1.pkl"
+    champion_model_path: "models/credit_risk/risk_model_v1.pkl"
+    challenger_model_path: null            # set when challenger is available
+    pd_band_thresholds:
+      low_max: 0.05
+      medium_max: 0.10
+    # Model performance floor (SR 11-7 back-testing gate)
+    min_auc: 0.75
+    min_ks: 0.35
+    cross_val_folds: 5
+    optuna_trials: 20
+  fraud_detection:
+    model_path: "models/fraud_detection/fraud_model_v1.pkl"
+    fraud_threshold_reject: 0.60
+    fraud_threshold_review: 0.30
+    target_fraud_rate: 0.03
+    min_precision: 0.85
+    min_auc: 0.80
+  bootstrap_enabled: false   # true = 11-draw CI; false = ±0.025 fast path
+
+# ── Decision Engine Agent ────────────────────────────────────────────────────
+decision_engine:
+  policy_version: "v1"
+  escalation_bands:
+    - product: "credit_card"
+      refer_if_pd_between: [0.08, 0.12]
+    - product: "personal_loan"
+      refer_if_pd_between: [0.07, 0.11]
+    - product: "mortgage"
+      refer_if_pd_between: [0.05, 0.09]
+    - product: "smb_loan"
+      refer_if_pd_between: [0.10, 0.16]
+    - product: "commercial_loan"
+      refer_if_pd_between: [0.06, 0.10]
+  # Hard policy rules (applied BEFORE model score)
+  # P0.3: conditions are now expressed in the safe DSL schema
+  # (decision_engine/policy_dsl.py) — NO eval() calls.
+  # Leaf node:     { field, op, value }
+  # Compound node: { all: [...] } or { any: [...] }
+  # Allowed ops: == != > < >= <= is_none is_not_none
+  hard_rules:
+    - rule_id: "HR-001"
+      name: "Fraud Reject"
+      condition:
+        field: fraud_flag
+        op: "=="
+        value: "reject"
+      action: "REJECT"
+      reason_code: "AA02"
+    - rule_id: "HR-002"
+      name: "Fraud Review"
+      condition:
+        field: fraud_flag
+        op: "=="
+        value: "manual_review"
+      action: "MANUAL_REVIEW"
+      reason_code: "AA05"
+    - rule_id: "HR-003"
+      name: "Thin File — No Accounts"
+      condition:
+        all:
+          - { field: num_open_accounts, op: is_not_none }
+          - { field: num_open_accounts, op: "<", value: 1 }
+      action: "REJECT"
+      reason_code: "AA03"
+    - rule_id: "HR-004"
+      name: "DTI Hard Cap"
+      condition:
+        field: dti
+        op: ">"
+        value: 0.55
+      action: "REJECT"
+      reason_code: "AA04"
+  # Model-score based cutoffs
+  score_cutoffs:
+    approve_max_pd: 0.05           # pd_score ≤ this → auto-approve
+    review_max_pd: 0.10            # pd_score ≤ this → manual review
+    # Above review_max_pd → reject
+  # Approved product parameters
+  approved_term_months: 36
+  # Experimentation flag
+  enable_challenger: false
+  challenger_traffic_pct: 0.10    # 10% traffic to challenger
+
+# ── Explainability Agent ─────────────────────────────────────────────────────
+explainability:
+  method: "shap"                  # "shap" | "lime"
+  top_n_factors: 5
+  save_waterfall_plot: false
+  # FCRA adverse action reason code mapping
+  reason_code_map:
+    AA01: "High probability of default based on credit profile"
+    AA02: "Identity or fraud risk indicators detected"
+    AA03: "Insufficient credit history or open accounts"
+    AA04: "Debt-to-income ratio exceeds policy limits"
+    AA05: "Application flagged for manual underwriter review"
+  # Compliance disclosure template
+  adverse_action_header: >
+    We regret to inform you that your application has been declined.
+    The primary reason(s) for this decision are listed below.
+    You have the right to request a free copy of your credit report under FCRA.
+
+# ── Monitoring Agent ─────────────────────────────────────────────────────────
+monitoring:
+  drift:
+    psi_stable_threshold: 0.10
+    psi_minor_threshold: 0.25
+    n_bins: 10
+    alert_on_major_drift: true
+    report_output_dir: "reports/drift"
+  fair_lending:
+    protected_attributes:
+      - race
+      - gender
+      - age_group
+      - zip_code_group
+    dir_flag_threshold: 0.80       # 4/5ths rule
+    approval_parity_p_value: 0.05
+    report_output_dir: "reports/fair_lending"
+  scheduling:
+    drift_check_interval_hours: 24
+    fair_lending_check_interval_days: 7
+
+# ── Experimentation Agent ────────────────────────────────────────────────────
+experimentation:
+  default_experiment_duration_days: 14
+  min_sample_size_per_arm: 500
+  significance_level: 0.05
+  primary_metric: "approval_rate"
+  secondary_metrics:
+    - "default_rate_30dpd"
+    - "expected_profit_per_application"
+  # Champion is always control; challenger is treatment
+  traffic_split:
+    control: 0.90
+    treatment: 0.10
+
+# ── BigQuery Integration ─────────────────────────────────────────────────────
+bigquery:
+  project: ai-risk-workflow
+  dataset: credit_risk_model_dev
+  # "streaming" → BQ Storage Write API (online scoring, low latency)
+  # "batch"     → Load job via load_table_from_dataframe (nightly batch, lower cost)
+  write_mode: streaming
+  # Set to false to disable BQ writes without removing the agent
+  enabled: true
+  tables:
+    loan_applications:   loan_applications
+    feature_vectors:     feature_vectors
+    model_scores:        model_scores
+    credit_decisions:    credit_decisions
+    explanations:        explanations
+    model_registry:      model_registry
+    drift_reports:       drift_reports
+    fair_lending_reports: fair_lending_reports
+    experiment_results:  experiment_results
+
+# ── Pipeline Orchestration ───────────────────────────────────────────────────
+orchestration:
+  retry_attempts: 3
+  retry_backoff_seconds: 5
+  timeout_seconds:
+    data_ingestion: 30
+    feature_engineering: 15
+    risk_modeling: 10
+    decision_engine: 5
+    explainability: 10
+  # Whether the pipeline runs online (per-request) or offline (batch)
+  mode: "online"                  # "online" | "batch"
+  batch_size: 1000

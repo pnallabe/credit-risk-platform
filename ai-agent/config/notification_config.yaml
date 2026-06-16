@@ -1,0 +1,29 @@
+scheduler:
+  daily_portfolio:
+    cron: "0 7 * * *"
+    persona: business_analyst
+    report_type: portfolio
+    notify_levels: [info, warning, critical]
+
+  weekly_model_health:
+    cron: "0 8 * * 1"
+    persona: data_analyst
+    report_type: model_health
+    notify_levels: [info, warning]
+
+  monthly_fair_lending:
+    cron: "0 9 1 * *"
+    persona: business_analyst
+    report_type: fair_lending
+    notify_levels: [info, warning, critical]
+
+  realtime_drift:
+    interval_minutes: 15
+    persona: data_analyst
+    report_type: drift
+    psi_threshold: 0.25
+    notify_levels: [warning, critical]
+
+notifications:
+  retention_days: 90
+  max_per_category: 500

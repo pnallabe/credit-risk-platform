@@ -1,0 +1,33 @@
+{
+  "policy_id": "FHLMC_POL_001",
+  "policy_type": "underwriting_policy",
+  "version": "1.0",
+  "effective_date": "2024-01-01",
+  "tenant_id": "freddie_mac",
+  "underwriting_rules": {
+    "min_credit_score": 680,
+    "max_dti": 0.43,
+    "min_annual_income": 45000,
+    "max_ltv": 0.80,
+    "acceptable_loan_purposes": ["home_purchase", "refinance"],
+    "max_concentration_single_applicant": 0.02,
+    "max_concentration_single_purpose": 0.80
+  },
+  "pricing_rules": {
+    "base_rate_methodology": "WACC + credit_spread + operational_cost",
+    "WACC": 0.05,
+    "operational_cost_bps": 50,
+    "credit_spread_by_grade": {
+      "A": 50,
+      "B": 100,
+      "C": 150,
+      "D": 250,
+      "E": 400
+    }
+  },
+  "risk_appetite": {
+    "max_portfolio_default_rate": 0.03,
+    "target_roa": 0.04,
+    "max_single_loan_loss_given_default": 0.20
+  }
+}

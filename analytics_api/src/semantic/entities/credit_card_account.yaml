@@ -1,0 +1,130 @@
+entity: CreditCardAccount
+description: "A credit card account — covers origination decisions and account-level attributes"
+sources:
+  - name: credit_risk.cc_origination_with_decisions
+    join_key: account_id
+    freshness_sla_hours: 24
+  - name: credit_risk_model_dev.cc_originations
+    join_key: origination_id
+    freshness_sla_hours: 24
+  - name: credit_risk_model_dev.cc_customers
+    join_key: customer_id
+    freshness_sla_hours: 24
+primary_key: account_id
+attributes:
+  account_id:
+    type: integer
+    description: "Unique identifier for the credit card account"
+    mappings:
+      credit_risk.cc_origination_with_decisions: account_id
+      credit_risk.cc_account_monthly_economics: account_id
+  origination_id:
+    type: string
+    description: "Unique identifier for the origination record (model_dev dataset)"
+    mappings:
+      credit_risk_model_dev.cc_originations: origination_id
+  customer_id:
+    type: string
+    description: "Foreign key to the card holder"
+    mappings:
+      credit_risk_model_dev.cc_originations: customer_id
+      credit_risk_model_dev.cc_customers: customer_id
+  origination_date:
+    type: date
+    description: "Date the account was opened"
+    mappings:
+      credit_risk_model_dev.cc_originations: origination_date
+  orig_date:
+    type: integer
+    description: "Origination date stored as INT64 nanosecond epoch in production dataset. Use TIMESTAMP_MICROS(CAST(orig_date / 1000 AS INT64)) to convert to TIMESTAMP for date grouping. Prefer origination_date from credit_risk_model_dev.cc_originations for time-series queries."
+    mappings:
+      credit_risk.cc_origination_with_decisions: orig_date
+  product:
+    type: string
+    description: "Card product type (e.g. STANDARD, REWARDS, SECURED)"
+    mappings:
+      credit_risk.cc_origination_with_decisions: product
+      credit_risk_model_dev.cc_originations: product_id
+  risk_grade:
+    type: string
+    description: "Risk grade assigned at origination"
+    mappings:
+      credit_risk.cc_origination_with_decisions: risk_grade
+  state:
+    type: string
+    description: "Applicant's state of residence"
+    mappings:
+      credit_risk.cc_origination_with_decisions: state
+      credit_risk_model_dev.cc_customers: state
+  fico_score:
+    type: integer
+    description: "Bureau score at origination"
+    mappings:
+      credit_risk.cc_origination_with_decisions: fico_score
+      credit_risk_model_dev.cc_originations: bureau_score_at_orig
+      credit_risk_model_dev.cc_customers: bureau_score_at_first_cc_app
+  annual_income:
+    type: decimal
+    description: "Stated/verified annual income in USD"
+    mappings:
+      credit_risk.cc_origination_with_decisions: annual_income
+      credit_risk_model_dev.cc_originations: income_verified_usd
+      credit_risk_model_dev.cc_customers: income_annual_usd
+  dti:
+    type: decimal
+    description: "Debt-to-income ratio at origination"
+    mappings:
+      credit_risk.cc_origination_with_decisions: dti
+  credit_limit:
+    type: decimal
+    description: "Approved credit limit in USD"
+    mappings:
+      credit_risk.cc_origination_with_decisions: credit_limit
+      credit_risk_model_dev.cc_originations: credit_limit_usd
+  apr:
+    type: decimal
+    description: "Annual percentage rate"
+    mappings:
+      credit_risk.cc_origination_with_decisions: apr
+      credit_risk_model_dev.cc_originations: apr_purchase
+  annual_fee:
+    type: decimal
+    description: "Annual fee charged to the account"
+    mappings:
+      credit_risk.cc_origination_with_decisions: annual_fee
+      credit_risk_model_dev.cc_originations: annual_fee_usd
+  channel:
+    type: string
+    description: "Application channel"
+    mappings:
+      credit_risk.cc_origination_with_decisions: app_channel
+      credit_risk_model_dev.cc_originations: channel
+  decision_outcome:
+    type: string
+    description: "Underwriting decision: APPROVED, DECLINED, etc."
+    allowed_values: [APPROVED, DECLINED, REFERRED, COUNTER_OFFER]
+    mappings:
+      credit_risk.cc_origination_with_decisions: decision_outcome
+      credit_risk_model_dev.cc_originations: decision
+  decision_reason_codes:
+    type: string
+    description: "Adverse action / decline reason codes"
+    mappings:
+      credit_risk.cc_origination_with_decisions: decision_reason_codes
+      credit_risk_model_dev.cc_originations: decision_reason_code
+  employment_status:
+    type: string
+    description: "Employment status of the applicant"
+    mappings:
+      credit_risk.cc_origination_with_decisions: employment_status
+      credit_risk_model_dev.cc_customers: employment_type
+  thin_file:
+    type: boolean
+    description: "Whether the customer was a thin-file applicant"
+    mappings:
+      credit_risk_model_dev.cc_customers: thin_file
+  pct_rev_utilization:
+    type: decimal
+    description: "Revolving utilization at time of application"
+    mappings:
+      credit_risk.cc_origination_with_decisions: pct_rev_utilization

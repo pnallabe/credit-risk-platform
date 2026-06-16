@@ -1,0 +1,96 @@
+{
+  "tenant_id": "plaid_data",
+  "product_type": "OVERDRAFT_CASH_ADVANCE",
+  "generated_at": "2026-06-04T19:55:53.999526+00:00",
+  "policy_version": "v1",
+  "policy_parameters": {
+    "product_type": "OVERDRAFT_CASH_ADVANCE",
+    "pd_threshold_approve": 0.12,
+    "pd_threshold_refer": 0.2,
+    "fraud_reject_threshold": 0.8,
+    "fraud_review_threshold": 0.6,
+    "max_dti": 0.85,
+    "min_open_accounts": 0,
+    "min_loan_amount_usd": 20.0,
+    "max_loan_amount_usd": 500.0,
+    "base_apr": 0.0,
+    "max_apr": 36.0,
+    "required_features": [
+      "avg_monthly_inflow",
+      "net_monthly_cash_flow",
+      "nsf_count_90d",
+      "overdraft_count_90d",
+      "savings_balance",
+      "bank_account_age_months"
+    ],
+    "extra_rules": [
+      "plaid_balance_realtime_check",
+      "plaid_nsf_gate_5",
+      "plaid_bank_age_min_2_months",
+      "plaid_min_inflow_500_monthly",
+      "overdraft_count_gate_10_90d"
+    ],
+    "description": "Overdraft / cash advance \u2014 Plaid-data tenant.  Real-time Plaid balance check required at disbursement.",
+    "regulatory_notes": "CFPB overdraft fee guidance 2024: fee-based overdraft = TILA credit if systematic. UDAAP risk if fee not clearly disclosed. Plaid balance check consent must be included in account-linking agreement."
+  },
+  "regulatory_compliance_checklist": [
+    {
+      "regulation": "TILA / Reg Z",
+      "requirement": "Systematic overdraft = credit if fee-based; disclose APR equivalent",
+      "status": "required"
+    },
+    {
+      "regulation": "CFPB 2024",
+      "requirement": "Fee-based overdraft capped at cost or $5 per CFPB overdraft rule",
+      "status": "required"
+    },
+    {
+      "regulation": "UDAAP",
+      "requirement": "Real-time balance check must be disclosed in account agreement",
+      "status": "required"
+    },
+    {
+      "regulation": "ECOA / Reg B",
+      "requirement": "Adverse action if declined for cash advance",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7604",
+      "requirement": "Permissible purpose (underwriting) documented per transaction",
+      "status": "required"
+    },
+    {
+      "regulation": "FCRA \u00a7615",
+      "requirement": "Adverse action notice identifies Plaid as data source and provides contact details",
+      "status": "required"
+    },
+    {
+      "regulation": "Plaid ToS",
+      "requirement": "End-user OAuth consent captured via Plaid Link; consent record retained 7 years",
+      "status": "required"
+    },
+    {
+      "regulation": "CCPA / CPRA",
+      "requirement": "Plaid bank data included in data-subject access and erasure workflows",
+      "status": "required"
+    },
+    {
+      "regulation": "SOC 2 Type II",
+      "requirement": "Plaid API credentials stored in secrets manager; not in code or config files",
+      "status": "required"
+    }
+  ],
+  "underwriting_data_sources": {
+    "primary": "Plaid (bank account cash-flow)",
+    "secondary": "Credit bureau (Experian / Equifax / TransUnion)",
+    "tertiary": "Alt-data (rent, utilities, mobile via ingestion-api)"
+  },
+  "plaid_features_used": [
+    "avg_monthly_inflow",
+    "net_monthly_cash_flow",
+    "nsf_count_90d",
+    "overdraft_count_90d",
+    "savings_balance",
+    "bank_account_age_months"
+  ]
+}

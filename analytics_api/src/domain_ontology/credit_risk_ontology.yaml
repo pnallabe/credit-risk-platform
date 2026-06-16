@@ -1,0 +1,182 @@
+# credit_risk_ontology.yaml
+# Domain Ontology for Credit Risk Platform
+# Concepts are organized in an IS-A hierarchy. Variants narrow the concept
+# by applying SQL filter conditions. Business rules attach validation constraints.
+
+version: "1.0"
+domain: credit_risk
+
+concepts:
+  # ─── Top-level performance concept ───────────────────────────────────────
+  - name: PortfolioPerformance
+    description: "Overall health metrics of the loan portfolio"
+    parent: null
+    metric: null
+    variants: []
+    rules: []
+
+  # ─── Delinquency concept tree ─────────────────────────────────────────────
+  - name: Delinquency
+    description: "Loans with payments overdue"
+    parent: PortfolioPerformance
+    metric: DelinquencyRate
+    variants:
+      - name: Delinquency_30DPD
+        description: "30+ days past due"
+        filter: "`30dpd_rate`"
+        severity: moderate
+      - name: Delinquency_60DPD
+        description: "60+ days past due"
+        filter: "`60dpd_rate`"
+        severity: high
+      - name: Delinquency_90DPD
+        description: "90+ days past due"
+        filter: "`90dpd_rate`"
+        severity: critical
+    rules:
+      - id: DLQ-R01
+        description: "Delinquency rate must be non-negative"
+        expression: "value >= 0"
+        severity: error
+      - id: DLQ-R02
+        description: "Delinquency rate cannot exceed 100%"
+        expression: "value <= 100"
+        severity: error
+      - id: DLQ-R03
+        description: "90DPD rate must be <= 60DPD rate"
+        expression: "true"   # enforced separately in post-processing
+        severity: warning
+
+  # ─── ChargeOff concept tree ───────────────────────────────────────────────
+  - name: ChargeOff
+    description: "Loans written off as unrecoverable losses"
+    parent: PortfolioPerformance
+    metric: ChargeOffRate
+    variants:
+      - name: GrossChargeOff
+        description: "Total charge-off before recoveries"
+        filter: "charge_off_rate"
+        severity: high
+      - name: NetChargeOff
+        description: "Charge-off net of recoveries"
+        filter: "net_charge_off_rate"
+        severity: high
+    rules:
+      - id: CO-R01
+        description: "Charge-off rate must be non-negative"
+        expression: "value >= 0"
+        severity: error
+      - id: CO-R02
+        description: "Net charge-off rate must be <= gross charge-off rate"
+        expression: "true"   # enforced separately
+        severity: warning
+
+  # ─── Approval concept tree ────────────────────────────────────────────────
+  - name: Approval
+    description: "Loan application approval outcomes"
+    parent: PortfolioPerformance
+    metric: ApprovalRate
+    variants:
+      - name: ApprovalByFICO
+        description: "Approval rate segmented by FICO tier"
+        filter: "fico_tier IS NOT NULL"
+        severity: null
+      - name: ApprovalByState
+        description: "Approval rate segmented by state"
+        filter: "state IS NOT NULL"
+        severity: null
+    rules:
+      - id: APR-R01
+        description: "Approval rate must be between 0 and 100"
+        expression: "0 <= value <= 100"
+        severity: error
+
+  # ─── LoanExposure concept tree ────────────────────────────────────────────
+  - name: LoanExposure
+    description: "Total outstanding principal exposure"
+    parent: PortfolioPerformance
+    metric: LoanExposure
+    variants:
+      - name: ExposureByProduct
+        description: "Exposure broken down by product type"
+        filter: "product_type IS NOT NULL"
+        severity: null
+      - name: ExposureOverTime
+        description: "Time-series exposure using loan_monthly_ledger"
+        filter: "period_month IS NOT NULL"
+        severity: null
+    rules:
+      - id: EXP-R01
+        description: "Exposure must be non-negative"
+        expression: "value >= 0"
+        severity: error
+
+  # ─── FICO / Creditworthiness concept tree ────────────────────────────────
+  - name: Creditworthiness
+    description: "Borrower credit quality at origination"
+    parent: null
+    metric: null
+    variants: []
+    rules:
+      - id: FICO-R01
+        description: "FICO score must be between 300 and 850"
+        expression: "300 <= value <= 850"
+        severity: error
+
+  - name: FICOTier
+    description: "Bucketed FICO credit tier"
+    parent: Creditworthiness
+    metric: null
+    variants:
+      - name: FICOTier_SubPrime
+        description: "FICO < 620"
+        filter: "fico_score < 620"
+        severity: high
+      - name: FICOTier_NearPrime
+        description: "620 ≤ FICO < 660"
+        filter: "fico_score >= 620 AND fico_score < 660"
+        severity: moderate
+      - name: FICOTier_Prime
+        description: "660 ≤ FICO < 740"
+        filter: "fico_score >= 660 AND fico_score < 740"
+        severity: null
+      - name: FICOTier_SuperPrime
+        description: "FICO ≥ 740"
+        filter: "fico_score >= 740"
+        severity: null
+    rules:
+      - id: FICO-R01
+        description: "FICO score must be 300–850"
+        expression: "300 <= value <= 850"
+        severity: error
+
+  # ─── Utilization ──────────────────────────────────────────────────────────
+  - name: Utilization
+    description: "Credit card utilization rate"
+    parent: PortfolioPerformance
+    metric: UtilizationRate
+    variants:
+      - name: HighUtilization
+        description: "Utilization > 80%"
+        filter: "utilization_rate > 0.80"
+        severity: high
+    rules:
+      - id: UTIL-R01
+        description: "Utilization rate must be 0–1"
+        expression: "0 <= value <= 1"
+        severity: error
+
+# ─── Term → Concept mappings (intent normalization hints) ─────────────────
+intent_mappings:
+  - terms: [delinquency, delinquent, past due, DPD, 30 DPD, 60 DPD, 90 DPD, late]
+    concept: Delinquency
+  - terms: [charge off, charge-off, chargeoff, NCO, net charge off, write off, write-off, bad debt]
+    concept: ChargeOff
+  - terms: [approval rate, approval, approve, approved, acceptance rate, accept rate]
+    concept: Approval
+  - terms: [loan exposure, exposure, outstanding, portfolio balance, book, outstanding balance]
+    concept: LoanExposure
+  - terms: [FICO, credit score, creditworthiness, credit quality, fico score]
+    concept: FICOTier
+  - terms: [utilization, util rate, credit utilization, revolving utilization]
+    concept: Utilization

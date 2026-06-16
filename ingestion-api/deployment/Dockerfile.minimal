@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies first (this should work)
+RUN pip install --no-cache-dir \
+    fastapi==0.109.0 \
+    uvicorn==0.27.0 \
+    pydantic==2.5.3 \
+    google-cloud-storage==2.14.0 \
+    google-cloud-pubsub==2.19.0 \
+    PyJWT==2.8.0 && \
+    python -c "import uvicorn; print('uvicorn installed')"
+
+# Copy files one by one (no wildcards)
+COPY ./src/main.py /app/main.py
+COPY ./src/models.py /app/models.py
+COPY ./src/auth.py /app/auth.py
+
+# List what we have
+RUN ls -la /app/
+
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+
+CMD ["/usr/local/bin/python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8080"]

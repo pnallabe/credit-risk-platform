@@ -1,0 +1,57 @@
+{
+  "tenant_id": "plaid_data",
+  "tenant_name": "Plaid Data Open-Banking Tenant",
+  "generated_at": "2026-06-04T19:55:53.999807+00:00",
+  "policy_version": "v1",
+  "products": [
+    "CREDIT_CARD",
+    "PERSONAL_LOAN",
+    "AUTO_LOAN",
+    "BNPL",
+    "MORTGAGE",
+    "SMALL_BUSINESS_LOAN",
+    "SMB_SECURED_LOAN",
+    "CREDIT_BUILDER",
+    "OVERDRAFT_CASH_ADVANCE"
+  ],
+  "artifacts": [
+    "policy_credit_card.json",
+    "policy_personal_loan.json",
+    "policy_auto_loan.json",
+    "policy_bnpl.json",
+    "policy_mortgage.json",
+    "policy_small_business_loan.json",
+    "policy_smb_secured_loan.json",
+    "policy_credit_builder.json",
+    "policy_overdraft_cash_advance.json"
+  ],
+  "wave_map": {
+    "Wave 1 (Weeks 1-5)": [
+      "BNPL",
+      "PERSONAL_LOAN",
+      "SMB_SECURED_LOAN"
+    ],
+    "Wave 2 (Weeks 6-9)": [
+      "CREDIT_CARD",
+      "CREDIT_BUILDER",
+      "OVERDRAFT_CASH_ADVANCE"
+    ],
+    "Wave 3 (Weeks 10-12)": [
+      "AUTO_LOAN",
+      "SMALL_BUSINESS_LOAN"
+    ],
+    "Wave 4 (Post-launch)": [
+      "MORTGAGE"
+    ]
+  },
+  "plaid_integration": {
+    "connector": "ingestion-api/src/plaid_connector.py",
+    "env_vars": [
+      "PLAID_CLIENT_ID",
+      "PLAID_SECRET",
+      "PLAID_ENV"
+    ],
+    "bank_lookback_days": 90,
+    "income_product_enabled": true
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "packet_id": "31f0405e-a20e-4274-8761-dabab0ea8e19",
+  "generated_at": "2026-04-13T02:14:47.692921+00:00",
+  "tenant_id": "freddie_mac_sflld",
+  "template": "CFPB_FAIR_LENDING_EXAMINATION",
+  "source_directory": "/Users/swarnabale/Documents/My Projects/credit-risk-platform/reports/fair_lending/2021_live",
+  "components": [
+    "executive_summary",
+    "fair_lending_test_q1_low_income_vs_q5_high_income",
+    "fair_lending_test_q2_lower_mid_vs_q5_high_income",
+    "fair_lending_test_first_time_homebuyer_disparity",
+    "fair_lending_test_broker_vs_retail_channel",
+    "loan_terms_disparity_by_income_group",
+    "methodology_and_regulatory_basis",
+    "model_documentation_record_sr11_7",
+    "data_provenance_and_chain_of_custody"
+  ],
+  "gcp_project": "ai-risk-workflow",
+  "bq_dataset": "freddie_mac_sflld"
+}
