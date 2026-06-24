@@ -20,11 +20,13 @@ export default function PortalHub() {
     { name: 'Audit Logs', href: '/audit', icon: <FileText size={24} />, desc: 'Comprehensive decision logs and records' },
   ];
 
+  const analyticsUrl = process.env.NEXT_PUBLIC_ANALYTICS_PORTAL_URL || 'http://localhost:3001';
+
   const analyticsDashboards = [
-    { name: 'Executive Overview', href: 'http://localhost:3001', icon: <BarChart3 size={24} />, desc: 'High-level portfolio and financial metrics' },
-    { name: 'Underwriter Queue', href: 'http://localhost:3001', icon: <Users size={24} />, desc: 'Manual review and application processing' },
-    { name: 'Risk Analyst View', href: 'http://localhost:3001', icon: <LineChart size={24} />, desc: 'Vintage curves and cohort analysis' },
-    { name: 'Data Scientist Space', href: 'http://localhost:3001', icon: <Lock size={24} />, desc: 'Model drift and feature importance deep dives' },
+    { name: 'Executive Overview', href: analyticsUrl, icon: <BarChart3 size={24} />, desc: 'High-level portfolio and financial metrics' },
+    { name: 'Underwriter Queue', href: analyticsUrl, icon: <Users size={24} />, desc: 'Manual review and application processing' },
+    { name: 'Risk Analyst View', href: analyticsUrl, icon: <LineChart size={24} />, desc: 'Vintage curves and cohort analysis' },
+    { name: 'Data Scientist Space', href: analyticsUrl, icon: <Lock size={24} />, desc: 'Model drift and feature importance deep dives' },
   ];
 
   return (
