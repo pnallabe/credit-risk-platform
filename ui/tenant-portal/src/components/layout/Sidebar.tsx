@@ -1,8 +1,44 @@
 "use client";
 import Link from 'next/link';
+import React from 'react';
 import { usePathname } from 'next/navigation';
 import { LayoutDashboard, Activity, PieChart, ShieldCheck, FileText, Settings } from 'lucide-react';
 import { canonicalizeTenantSlug } from '@/lib/tenant-routing';
+
+function TenantFooter() {
+  const [tenantSlug, setTenantSlug] = React.useState('');
+  const [email, setEmail] = React.useState('');
+
+  React.useEffect(() => {
+    setTenantSlug(localStorage.getItem('helix_tenant_slug') || 'unknown');
+    setEmail(localStorage.getItem('helix_tenant_id') || '');
+  }, []);
+
+  const initials = tenantSlug.slice(0, 2).toUpperCase() || 'HD';
+
+  return (
+    <div style={{ padding: '1.5rem', borderTop: '1px solid var(--border-light)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        <div style={{
+          width: '36px', height: '36px', borderRadius: '50%',
+          backgroundColor: 'var(--primary-light)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          color: 'var(--primary)', fontWeight: 600,
+        }}>
+          {initials}
+        </div>
+        <div>
+          <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', textTransform: 'capitalize' }}>
+            {tenantSlug.replace(/-/g, ' ')}
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '140px' }}>
+            {email || 'tenant session'}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -15,10 +51,10 @@ export default function Sidebar() {
 
   const navItems = [
     { name: 'Dashboard', href: prefixed('/dashboard'), icon: LayoutDashboard },
-    { name: 'Reports', href: prefixed('/reports'), icon: PieChart },
-    { name: 'Model Diagnostics', href: prefixed('/dashboard'), icon: Activity },
-    { name: 'Audit & Explainability', href: prefixed('/reports'), icon: FileText },
-    { name: 'Compliance', href: prefixed('/reports'), icon: ShieldCheck },
+    { name: 'Portfolio & Reports', href: prefixed('/reports'), icon: PieChart },
+    { name: 'Model Diagnostics', href: '/model-diagnostics', icon: Activity },
+    { name: 'Audit & Explainability', href: prefixed('/audit'), icon: FileText },
+    { name: 'Compliance', href: prefixed('/compliance'), icon: ShieldCheck },
     { name: 'Settings', href: prefixed('/settings'), icon: Settings },
   ];
 
@@ -61,17 +97,7 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      <div style={{ padding: '1.5rem', borderTop: '1px solid var(--border-light)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-          <div style={{ width: '36px', height: '36px', borderRadius: '50%', backgroundColor: 'var(--primary-light)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--primary)', fontWeight: 600 }}>
-            AC
-          </div>
-          <div>
-            <div style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)' }}>Acme Corp</div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>Tenant ID: t_8921a</div>
-          </div>
-        </div>
-      </div>
+      <TenantFooter />
     </aside>
   );
 }
