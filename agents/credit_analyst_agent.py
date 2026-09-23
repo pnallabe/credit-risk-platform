@@ -491,3 +491,62 @@ class CreditAnalystAgent(BaseAgent):
             status=AgentStatus.SUCCESS,
             payload={"qualitative_assessment": assessment},
         )
+
+    def generate_commercial_credit_memo(
+        self,
+        spreading: Any,
+        requested_loan_amount: float,
+        proposed_term_months: int = 36,
+    ) -> Dict[str, Any]:
+        """Compile a formal commercial credit underwriting memo from financial spreading data."""
+        dscr = getattr(spreading, "dscr", 1.25)
+        debt_to_ebitda = getattr(spreading, "debt_to_ebitda", 3.0)
+        current_ratio = getattr(spreading, "current_ratio", 1.5)
+        entity_name = getattr(spreading, "entity_name", "Commercial Borrower")
+        tax_form = getattr(spreading, "tax_form_type", "1120-S")
+        ebitda = getattr(spreading, "ebitda", 0.0)
+
+        # Recommendation logic
+        if dscr >= 1.25 and debt_to_ebitda <= 4.0 and current_ratio >= 1.1:
+            recommendation = "APPROVE"
+            rationale = (
+                f"Strong Debt Service Coverage (DSCR={dscr:.2f} >= 1.25) and manageable leverage "
+                f"(Debt/EBITDA={debt_to_ebitda:.2f} <= 4.0x) support full credit facility approval."
+            )
+        elif dscr >= 1.0:
+            recommendation = "MANUAL_REVIEW"
+            rationale = (
+                f"Adequate DSCR ({dscr:.2f}) but tight debt coverage requires underwriter review "
+                f"and potential secondary collateral or personal guarantee."
+            )
+        else:
+            recommendation = "REJECT"
+            rationale = (
+                f"Insufficient Debt Service Coverage (DSCR={dscr:.2f} < 1.0) indicates inability "
+                f"to service proposed debt from operating cash flow."
+            )
+
+        memo_sections = {
+            "title": f"COMMERCIAL CREDIT UNDERWRITING MEMO — {entity_name.upper()}",
+            "generated_at": getattr(spreading, "parsed_at", ""),
+            "borrower_summary": {
+                "entity_name": entity_name,
+                "tax_form": tax_form,
+                "requested_facility": requested_loan_amount,
+                "term_months": proposed_term_months,
+            },
+            "financial_spreading_highlights": {
+                "gross_revenue": getattr(spreading, "gross_receipts_sales", 0.0),
+                "ebitda": ebitda,
+                "net_income": getattr(spreading, "net_taxable_income", 0.0),
+                "dscr": dscr,
+                "debt_to_ebitda": debt_to_ebitda,
+                "current_ratio": current_ratio,
+            },
+            "credit_recommendation": {
+                "recommendation": recommendation,
+                "rationale": rationale,
+            },
+        }
+
+        return memo_sections

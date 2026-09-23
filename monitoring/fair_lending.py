@@ -746,3 +746,82 @@ def simulate_fair_lending_impact(
         applications_tested=applications_tested,
         policy_config_used=new_policy_config,
     )
+
+
+# ---------------------------------------------------------------------------
+# Less Discriminatory Alternative (LDA) Pareto Search
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LDACandidateResult:
+    candidate_id: str
+    decision_threshold: float
+    approval_rate: float
+    disparate_impact_ratio: float
+    air_compliant: bool
+    pareto_optimal: bool
+
+
+def find_less_discriminatory_alternative(
+    decisions_df: pd.DataFrame,
+    scores_col: str = "risk_score",
+    protected_col: str = "demographic_group",
+    control_group: str = "white",
+    threshold_grid: Optional[List[float]] = None,
+    min_air_threshold: float = 0.80,
+) -> List[LDACandidateResult]:
+    """Execute a Pareto search across candidate decision thresholds to identify Less Discriminatory Alternatives (LDA).
+
+    Regulatory Rationale (CFPB / ECOA § 1002.14):
+    If a model produces a disparate impact (AIR < 0.80), the lender must evaluate
+    whether an alternative scoring threshold or feature weight combination exists that
+    achieves substantially the same business objective with less adverse impact.
+    """
+    if threshold_grid is None:
+        threshold_grid = [round(t, 2) for t in np.linspace(0.20, 0.80, 13)]
+
+    if scores_col not in decisions_df.columns:
+        logger.warning("Scores column '%s' missing for LDA search; returning empty.", scores_col)
+        return []
+
+    df = decisions_df.copy()
+    results: List[LDACandidateResult] = []
+
+    for idx, thresh in enumerate(threshold_grid):
+        df["temp_decision"] = np.where(df[scores_col] <= thresh, "APPROVE", "REJECT")
+        app_rate = float((df["temp_decision"] == "APPROVE").mean())
+
+        try:
+            report = analyze_fair_lending(
+                df,
+                protected_col=protected_col,
+                control_group=control_group,
+                decision_col="temp_decision",
+            )
+            air = float(report.dir_score or 0.0)
+        except Exception:
+            air = 0.0
+
+        air_ok = air >= min_air_threshold
+
+        results.append(
+            LDACandidateResult(
+                candidate_id=f"lda_candidate_{idx+1:02d}",
+                decision_threshold=thresh,
+                approval_rate=round(app_rate, 4),
+                disparate_impact_ratio=round(air, 4),
+                air_compliant=air_ok,
+                pareto_optimal=False,
+            )
+        )
+
+    # Identify Pareto optimal candidates (maximizing approval rate and AIR)
+    compliant_candidates = [r for r in results if r.air_compliant]
+    if compliant_candidates:
+        max_app = max(c.approval_rate for c in compliant_candidates)
+        for c in results:
+            if c.air_compliant and c.approval_rate >= max_app * 0.95:
+                c.pareto_optimal = True
+
+    return results

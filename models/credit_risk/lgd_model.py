@@ -273,3 +273,73 @@ def generate_lgd_model_card(model: LGDModel, output_path: Path) -> None:
     }
 
     output_path.write_text(json.dumps(card, indent=2, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
+# Two-Stage Hurdle / Beta LGD Architecture
+# ---------------------------------------------------------------------------
+
+
+class TwoStageHurdleLGDModel:
+    """Two-Stage Hurdle LGD Model:
+    - Stage 1: Logistic Classifier predicting P(LGD > 0 | X) (Probability of Non-Zero Loss)
+    - Stage 2: Beta / Logit-transformed Regressor predicting E[LGD | LGD > 0, X] (Loss Severity)
+    - Total Expected LGD = P(LGD > 0) * E[LGD | LGD > 0]
+    - Enforces Basel III senior unsecured floor (45%)
+    """
+
+    def __init__(self, apply_basel_floor: bool = True, basel_floor: float = 0.45) -> None:
+        from sklearn.linear_model import LogisticRegression, Ridge
+
+        self.apply_basel_floor = apply_basel_floor
+        self.basel_floor = basel_floor
+        self.stage1_clf = LogisticRegression(solver="liblinear", max_iter=1000)
+        self.stage2_reg = Ridge(alpha=1.0)
+        self._is_fitted = False
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> TwoStageHurdleLGDModel:
+        """Fit Stage 1 Hurdle Classifier and Stage 2 Severity Regressor."""
+        y = np.asarray(y, dtype=float)
+        # Stage 1 binary indicator: 1 if LGD > 0, 0 otherwise
+        y_stage1 = (y > 0.0).astype(int)
+        self.stage1_clf.fit(X, y_stage1)
+
+        # Stage 2 Severity model fitted ONLY on non-zero loss samples
+        non_zero_mask = y > 0.0
+        if np.sum(non_zero_mask) > 5:
+            X_nz = X[non_zero_mask]
+            y_nz = np.clip(y[non_zero_mask], 0.001, 0.999)
+            # Logit transformation for Beta-like bounded output
+            y_nz_logit = np.log(y_nz / (1.0 - y_nz))
+            self.stage2_reg.fit(X_nz, y_nz_logit)
+        else:
+            # Fallback if insufficient non-zero samples
+            self.stage2_reg.fit(X, np.zeros(len(X)))
+
+        self._is_fitted = True
+        return self
+
+    def predict_proba_loss(self, X: np.ndarray) -> np.ndarray:
+        """Stage 1: P(LGD > 0)."""
+        if not self._is_fitted:
+            return np.full(len(X), 0.5)
+        return self.stage1_clf.predict_proba(X)[:, 1]
+
+    def predict_severity(self, X: np.ndarray) -> np.ndarray:
+        """Stage 2: E[LGD | LGD > 0]."""
+        if not self._is_fitted:
+            return np.full(len(X), 0.5)
+        logits = self.stage2_reg.predict(X)
+        # Inverse logit sigmoid mapping back to (0, 1)
+        return 1.0 / (1.0 + np.exp(-logits))
+
+    def predict(self, X: np.ndarray, is_unsecured: bool = True) -> np.ndarray:
+        """Predict Total Expected LGD = P(LGD > 0) * E[LGD | LGD > 0]."""
+        p_loss = self.predict_proba_loss(X)
+        severity = self.predict_severity(X)
+        expected_lgd = p_loss * severity
+
+        if self.apply_basel_floor and is_unsecured:
+            expected_lgd = np.maximum(expected_lgd, self.basel_floor)
+
+        return np.clip(expected_lgd, 0.0, 1.0)
