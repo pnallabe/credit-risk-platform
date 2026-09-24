@@ -64,6 +64,65 @@ class DepositBetaModel:
         return self.beta * delta_market_bps
 
 
+@dataclass
+class DepositRunoffResult:
+    month: int
+    remaining_balance_pct: float
+    cumulative_runoff_amount: float
+    effective_duration_years: float
+
+
+class BehavioralDepositDecayModel:
+    """Log-logistic deposit decay survival curve modeling non-maturity deposit runoff under rate shocks:
+
+    Survival S(t) = 1 / (1 + (lambda_val * t)^alpha_val)
+    where lambda_val = decay_rate_base * (1 + beta * (rate_shock_bps / 100))
+    """
+
+    def __init__(self, base_annual_decay_rate: float = 0.12, alpha_shape: float = 1.5) -> None:
+        self.base_annual_decay_rate = base_annual_decay_rate
+        self.alpha_shape = alpha_shape
+
+    def compute_runoff_curve(
+        self,
+        initial_deposit_balance: float,
+        rate_shock_bps: float = 200.0,
+        projection_months: int = 60,
+        deposit_beta: float = 0.45,
+    ) -> List[DepositRunoffResult]:
+        """Compute monthly deposit runoff curve and remaining balance under rate shock."""
+        # Adjust decay speed by interest rate shock intensity
+        decay_multiplier = max(0.5, 1.0 + (deposit_beta * (rate_shock_bps / 1000.0)))
+        lambda_val = (self.base_annual_decay_rate / 12.0) * decay_multiplier
+
+        results: List[DepositRunoffResult] = []
+        weighted_time_sum = 0.0
+        pv_sum = 0.0
+
+        for m in range(1, projection_months + 1):
+            # Log-logistic survival formula
+            survival_prob = 1.0 / (1.0 + (lambda_val * m) ** self.alpha_shape)
+            rem_bal = initial_deposit_balance * survival_prob
+            runoff = initial_deposit_balance - rem_bal
+
+            t_years = m / 12.0
+            pv = rem_bal / ((1.0 + 0.04) ** t_years)
+            pv_sum += pv
+            weighted_time_sum += t_years * pv
+
+            results.append(
+                DepositRunoffResult(
+                    month=m,
+                    remaining_balance_pct=round(survival_prob * 100.0, 2),
+                    cumulative_runoff_amount=round(runoff, 2),
+                    effective_duration_years=round(weighted_time_sum / max(1.0, pv_sum), 3),
+                )
+            )
+
+        return results
+
+
+
 class EVESensitivityEngine:
     """Economic Value of Equity (EVE) Sensitivity & Interest Rate Stress Testing Engine."""
 

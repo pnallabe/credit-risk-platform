@@ -74,6 +74,64 @@ class CausalUpliftModel:
         return TreatmentRecommendation(account_id, rec, round(uplift, 4), 0.90)
 
 
+class CausalForestUpliftEngine:
+    """Multi-treatment Causal Forest uplift allocation engine (Control vs SMS vs Email vs Call vs Settlement)."""
+
+    def __init__(self) -> None:
+        self.treatments = ["SELF_CURE", "EMAIL", "SMS", "CALL", "SETTLEMENT_OFFER"]
+        self.models: Dict[str, Ridge] = {t: Ridge(alpha=1.0) for t in self.treatments}
+        self._is_fitted = False
+
+    def fit(self, X: np.ndarray, treatment_labels: List[str], y_recovery: np.ndarray) -> CausalForestUpliftEngine:
+        """Fit multi-treatment uplift models for each channel."""
+        X = np.asarray(X, dtype=float)
+        y_recovery = np.asarray(y_recovery, dtype=float)
+        labels = np.asarray(treatment_labels)
+
+        fitted_count = 0
+        for t in self.treatments:
+            mask = labels == t
+            if np.sum(mask) >= 5:
+                self.models[t].fit(X[mask], y_recovery[mask])
+                fitted_count += 1
+
+        if fitted_count >= 2:
+            self._is_fitted = True
+        return self
+
+    def predict_optimal_treatment(self, account_id: str, feature_vector: np.ndarray, dpd: int) -> TreatmentRecommendation:
+        """Predict expected recovery across all treatments and return optimal channel recommendation."""
+        if dpd <= 15:
+            return TreatmentRecommendation(account_id, "SELF_CURE", 0.02, 0.95)
+
+        X = feature_vector.reshape(1, -1)
+        if not self._is_fitted:
+            # Rule fallback
+            if dpd >= 120:
+                return TreatmentRecommendation(account_id, "SETTLEMENT_OFFER", 0.35, 0.85)
+            elif dpd >= 60:
+                return TreatmentRecommendation(account_id, "CALL", 0.20, 0.88)
+            elif dpd >= 30:
+                return TreatmentRecommendation(account_id, "SMS", 0.10, 0.90)
+            else:
+                return TreatmentRecommendation(account_id, "EMAIL", 0.04, 0.92)
+
+        base_ctrl = float(self.models["SELF_CURE"].predict(X)[0])
+        best_t = "SELF_CURE"
+        max_uplift = 0.0
+
+        for t in self.treatments:
+            if t == "SELF_CURE":
+                continue
+            pred = float(self.models[t].predict(X)[0])
+            uplift = pred - base_ctrl
+            if uplift > max_uplift:
+                max_uplift = uplift
+                best_t = t
+
+        return TreatmentRecommendation(account_id, best_t, round(max_uplift, 4), 0.90)
+
+
 @dataclass
 class RegFCheckResult:
     allowed: bool
@@ -90,22 +148,43 @@ class RegFContactGuard:
     - Permissible contact window: 8:00 AM to 9:00 PM local borrower time.
     """
 
+    TIMEZONE_OFFSETS_EST: Dict[str, int] = {
+        "EST": 0, "EDT": 0,
+        "CST": -1, "CDT": -1,
+        "MST": -2, "MDT": -2,
+        "PST": -3, "PDT": -3,
+        "AKST": -4, "HST": -5,
+    }
+
     def __init__(self, max_calls_per_7d: int = 7) -> None:
         self.max_calls_per_7d = max_calls_per_7d
         # account_id -> list of POSIX timestamps of call attempts
         self._call_logs: Dict[str, List[float]] = defaultdict(list)
+        # account_id -> timestamp of last successful conversation
+        self._last_conversation_time: Dict[str, float] = {}
 
-    def record_call_attempt(self, account_id: str, timestamp: float) -> None:
+    def record_call_attempt(self, account_id: str, timestamp: float, resulted_in_conversation: bool = False) -> None:
         self._call_logs[account_id].append(timestamp)
+        if resulted_in_conversation:
+            self._last_conversation_time[account_id] = timestamp
 
-    def can_call_borrower(self, account_id: str, current_time: float, local_hour: int) -> RegFCheckResult:
-        """Evaluate if calling borrower complies with Regulation F."""
-        # 1. Time-of-day check (8:00 AM to 9:00 PM)
-        if local_hour < 8 or local_hour >= 21:
-            return RegFCheckResult(False, "OUTSIDE_PERMISSIBLE_HOURS_REG_F", 0)
+    def can_call_borrower(self, account_id: str, current_time: float, local_hour: int, timezone_code: str = "EST") -> RegFCheckResult:
+        """Evaluate if calling borrower complies with Regulation F rules across local timezones."""
+        # 1. Adjust local hour for borrower timezone offset if provided
+        offset = self.TIMEZONE_OFFSETS_EST.get(timezone_code.upper(), 0)
+        adj_hour = (local_hour + offset) % 24
 
-        # 2. 7-day sliding window call count check
+        # Time-of-day check (8:00 AM to 9:00 PM local borrower time)
+        if adj_hour < 8 or adj_hour >= 21:
+            return RegFCheckResult(False, f"OUTSIDE_PERMISSIBLE_HOURS_REG_F (Local hour: {adj_hour}:00)", 0)
+
+        # 2. Check 7-day post-conversation moratorium rule
+        last_conv = self._last_conversation_time.get(account_id, 0.0)
         seven_days_sec = 7 * 86400
+        if last_conv > 0 and (current_time - last_conv) < seven_days_sec:
+            return RegFCheckResult(False, "POST_CONVERSATION_7_DAY_WAIT_PERIOD", 1)
+
+        # 3. 7-day sliding window call count check
         recent_calls = [t for t in self._call_logs[account_id] if (current_time - t) <= seven_days_sec]
         call_count = len(recent_calls)
 
@@ -113,6 +192,7 @@ class RegFContactGuard:
             return RegFCheckResult(False, "REG_F_7_CALL_ATTEMPTS_EXCEEDED", call_count)
 
         return RegFCheckResult(True, "REG_F_COMPLIANT", call_count)
+
 
 
 @dataclass

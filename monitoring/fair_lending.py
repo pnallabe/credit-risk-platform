@@ -749,7 +749,7 @@ def simulate_fair_lending_impact(
 
 
 # ---------------------------------------------------------------------------
-# Less Discriminatory Alternative (LDA) Pareto Search
+# Less Discriminatory Alternative (LDA) Pareto Search Engine
 # ---------------------------------------------------------------------------
 
 
@@ -761,6 +761,64 @@ class LDACandidateResult:
     disparate_impact_ratio: float
     air_compliant: bool
     pareto_optimal: bool
+    dominated_by_count: int = 0
+    recommendation_reason: str = ""
+    feature_weights_override: Optional[Dict[str, float]] = None
+
+
+class ParetoLDASearchEngine:
+    """Multi-objective Pareto Frontier search for Less Discriminatory Alternatives (LDA).
+
+    Regulatory Rationale (CFPB / ECOA § 1002.14 / HUD Fair Housing Act):
+    Evaluates alternative scoring thresholds and candidate feature weight modifications to find options on the
+    non-dominated 2D Pareto frontier (maximizing approval rate / business outcome while maximizing Disparate Impact Ratio AIR).
+    """
+
+    def __init__(
+        self,
+        min_air_threshold: float = DIR_THRESHOLD,  # 0.80 by default (4/5ths rule)
+        min_approval_rate: float = 0.10,
+    ) -> None:
+        self.min_air_threshold = min_air_threshold
+        self.min_approval_rate = min_approval_rate
+
+    def compute_pareto_frontier(
+        self,
+        candidates: List[LDACandidateResult],
+    ) -> List[LDACandidateResult]:
+        """Compute strict Pareto non-domination set for candidates optimizing (Approval Rate, AIR)."""
+        if not candidates:
+            return []
+
+        n = len(candidates)
+        for i in range(n):
+            candidates[i].dominated_by_count = 0
+            candidates[i].pareto_optimal = False
+
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                # Candidate j dominates Candidate i if j is >= in both objectives and strictly > in at least one
+                j_ge_app = candidates[j].approval_rate >= candidates[i].approval_rate
+                j_ge_air = candidates[j].disparate_impact_ratio >= candidates[i].disparate_impact_ratio
+                j_strictly_better = (
+                    candidates[j].approval_rate > candidates[i].approval_rate or
+                    candidates[j].disparate_impact_ratio > candidates[i].disparate_impact_ratio
+                )
+
+                if j_ge_app and j_ge_air and j_strictly_better:
+                    candidates[i].dominated_by_count += 1
+
+        for c in candidates:
+            if c.dominated_by_count == 0 and c.air_compliant and c.approval_rate >= self.min_approval_rate:
+                c.pareto_optimal = True
+                c.recommendation_reason = (
+                    f"Pareto Optimal LDA Candidate: Achieves AIR of {c.disparate_impact_ratio:.4f} "
+                    f"(>= {self.min_air_threshold}) with {c.approval_rate*100:.1f}% approval rate."
+                )
+
+        return candidates
 
 
 def find_less_discriminatory_alternative(
@@ -769,9 +827,10 @@ def find_less_discriminatory_alternative(
     protected_col: str = "demographic_group",
     control_group: str = "white",
     threshold_grid: Optional[List[float]] = None,
-    min_air_threshold: float = 0.80,
+    min_air_threshold: float = DIR_THRESHOLD,
+    score_modifiers: Optional[List[Dict[str, Any]]] = None,
 ) -> List[LDACandidateResult]:
-    """Execute a Pareto search across candidate decision thresholds to identify Less Discriminatory Alternatives (LDA).
+    """Execute a multi-objective Pareto search across candidate decision thresholds and model weight adjustments to identify Less Discriminatory Alternatives (LDA).
 
     Regulatory Rationale (CFPB / ECOA § 1002.14):
     If a model produces a disparate impact (AIR < 0.80), the lender must evaluate
@@ -786,9 +845,11 @@ def find_less_discriminatory_alternative(
         return []
 
     df = decisions_df.copy()
-    results: List[LDACandidateResult] = []
+    candidates: List[LDACandidateResult] = []
 
-    for idx, thresh in enumerate(threshold_grid):
+    # Grid search over decision thresholds
+    candidate_counter = 1
+    for thresh in threshold_grid:
         df["temp_decision"] = np.where(df[scores_col] <= thresh, "APPROVE", "REJECT")
         app_rate = float((df["temp_decision"] == "APPROVE").mean())
 
@@ -800,14 +861,15 @@ def find_less_discriminatory_alternative(
                 decision_col="temp_decision",
             )
             air = float(report.dir_score or 0.0)
-        except Exception:
+        except Exception as exc:
+            logger.debug("Fair lending DIR computation failed during threshold evaluation: %s", exc)
             air = 0.0
 
         air_ok = air >= min_air_threshold
 
-        results.append(
+        candidates.append(
             LDACandidateResult(
-                candidate_id=f"lda_candidate_{idx+1:02d}",
+                candidate_id=f"lda_candidate_{candidate_counter:02d}",
                 decision_threshold=thresh,
                 approval_rate=round(app_rate, 4),
                 disparate_impact_ratio=round(air, 4),
@@ -815,13 +877,50 @@ def find_less_discriminatory_alternative(
                 pareto_optimal=False,
             )
         )
+        candidate_counter += 1
 
-    # Identify Pareto optimal candidates (maximizing approval rate and AIR)
-    compliant_candidates = [r for r in results if r.air_compliant]
-    if compliant_candidates:
-        max_app = max(c.approval_rate for c in compliant_candidates)
-        for c in results:
-            if c.air_compliant and c.approval_rate >= max_app * 0.95:
-                c.pareto_optimal = True
+    # Optional grid search over score modifiers/weights if provided
+    if score_modifiers:
+        for mod in score_modifiers:
+            mod_name = mod.get("name", "custom_modifier")
+            weight_overrides = mod.get("weights", {})
+            thresh = mod.get("threshold", 0.50)
+
+            # Apply modifier logic
+            mod_score = df[scores_col].copy()
+            for feat, w in weight_overrides.items():
+                if feat in df.columns:
+                    mod_score += df[feat] * float(w)
+
+            df["temp_decision"] = np.where(mod_score <= thresh, "APPROVE", "REJECT")
+            app_rate = float((df["temp_decision"] == "APPROVE").mean())
+
+            try:
+                report = analyze_fair_lending(
+                    df,
+                    protected_col=protected_col,
+                    control_group=control_group,
+                    decision_col="temp_decision",
+                )
+                air = float(report.dir_score or 0.0)
+            except Exception:
+                air = 0.0
+
+            candidates.append(
+                LDACandidateResult(
+                    candidate_id=f"lda_candidate_{candidate_counter:02d}_{mod_name}",
+                    decision_threshold=thresh,
+                    approval_rate=round(app_rate, 4),
+                    disparate_impact_ratio=round(air, 4),
+                    air_compliant=air >= min_air_threshold,
+                    pareto_optimal=False,
+                    feature_weights_override=weight_overrides,
+                )
+            )
+            candidate_counter += 1
+
+    # Compute Pareto Frontier
+    engine = ParetoLDASearchEngine(min_air_threshold=min_air_threshold)
+    results = engine.compute_pareto_frontier(candidates)
 
     return results

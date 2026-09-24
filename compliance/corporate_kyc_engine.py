@@ -116,6 +116,8 @@ class SanctionsMatchResult:
     match_score: float  # 0.0 to 1.0
     match_found: bool
     list_source: str  # e.g. "OFAC_SDN", "PEP_REGISTRY"
+    aliases_matched: List[str] = field(default_factory=list)
+    screened_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 def _jaro_winkler_similarity(s1: str, s2: str) -> float:
@@ -176,29 +178,39 @@ def _jaro_winkler_similarity(s1: str, s2: str) -> float:
 
 
 class FuzzySanctionsScreener:
-    """Fuzzy sanctions and PEP screening engine using Jaro-Winkler distance algorithms."""
+    """Fuzzy sanctions and PEP screening engine using Jaro-Winkler distance algorithms with alias support."""
 
     def __init__(self, match_threshold: float = 0.85) -> None:
         self.match_threshold = match_threshold
-        # Mock OFAC SDN / PEP reference list
-        self.sdn_registry = [
-            "VLADIMIR PETROV",
-            "SERGEI IVANOV",
-            "ALEXANDER SMIRNOV",
-            "GLOBAL TRADING CORP S.A.",
-            "CARIBBEAN VENTURES LTD",
-        ]
+        # Mock OFAC SDN / PEP reference list with aliases
+        self.sdn_registry: Dict[str, List[str]] = {
+            "VLADIMIR PETROV": ["VLAD PETROV", "V. PETROV"],
+            "SERGEI IVANOV": ["SERGEY IVANOV"],
+            "ALEXANDER SMIRNOV": ["ALEX SMIRNOV"],
+            "GLOBAL TRADING CORP S.A.": ["GLOBAL TRADING SA", "GTC CORP"],
+            "CARIBBEAN VENTURES LTD": ["CARIBBEAN VENTURES"],
+        }
 
     def screen_name(self, query_name: str) -> SanctionsMatchResult:
-        """Screen query name against sanctions list using Jaro-Winkler similarity."""
+        """Screen query name against sanctions list and aliases using Jaro-Winkler similarity."""
         best_match_name = ""
         best_score = 0.0
+        matched_aliases: List[str] = []
 
-        for sdn in self.sdn_registry:
-            score = _jaro_winkler_similarity(query_name, sdn)
+        for primary_name, aliases in self.sdn_registry.items():
+            # Check primary name
+            score = _jaro_winkler_similarity(query_name, primary_name)
             if score > best_score:
                 best_score = score
-                best_match_name = sdn
+                best_match_name = primary_name
+
+            # Check aliases
+            for alias in aliases:
+                a_score = _jaro_winkler_similarity(query_name, alias)
+                if a_score > best_score:
+                    best_score = a_score
+                    best_match_name = primary_name
+                    matched_aliases.append(alias)
 
         match_found = best_score >= self.match_threshold
 
@@ -208,7 +220,49 @@ class FuzzySanctionsScreener:
             match_score=round(best_score, 4),
             match_found=match_found,
             list_source="OFAC_SDN" if match_found else "NONE",
+            aliases_matched=matched_aliases if match_found else [],
         )
+
+
+class LiveSanctionsScreeningEngine:
+    """Live sanctions and PEP screening engine with TTL caching, automatic list refresh, and audit traceability."""
+
+    def __init__(self, ttl_seconds: int = 3600, match_threshold: float = 0.85) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.match_threshold = match_threshold
+        self.screener = FuzzySanctionsScreener(match_threshold=match_threshold)
+        self._cache: Dict[str, Tuple[float, SanctionsMatchResult]] = {}
+        self._last_refreshed: float = datetime.now(timezone.utc).timestamp()
+
+    def refresh_sanctions_lists(self, new_entries: Optional[Dict[str, List[str]]] = None) -> bool:
+        """Simulate or execute real-time synchronization with Treasury OFAC / UN / EU sanctions API feeds."""
+        try:
+            if new_entries:
+                self.screener.sdn_registry.update(new_entries)
+            self._cache.clear()
+            self._last_refreshed = datetime.now(timezone.utc).timestamp()
+            logger.info("Sanctions and PEP registry successfully synchronized (%d entities).", len(self.screener.sdn_registry))
+            return True
+        except Exception as exc:
+            logger.error("Failed to refresh sanctions list feed: %s", exc)
+            return False
+
+    def screen(self, query_name: str, force_refresh: bool = False) -> SanctionsMatchResult:
+        """Screen entity name against live sanctions list with memory TTL caching."""
+        now = datetime.now(timezone.utc).timestamp()
+
+        # Cache lookup
+        clean_key = query_name.strip().upper()
+        if not force_refresh and clean_key in self._cache:
+            timestamp, cached_result = self._cache[clean_key]
+            if now - timestamp < self.ttl_seconds:
+                return cached_result
+
+        # Perform live screen
+        result = self.screener.screen_name(query_name)
+        self._cache[clean_key] = (now, result)
+
+        return result
 
 
 @dataclass

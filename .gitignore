@@ -16,6 +16,7 @@
 *.der
 credentials.json
 service_account*.json
+security/*.json
 application_default_credentials.json
 gcloud_*.json
 .gcp-sa-key-*.json
@@ -111,6 +112,14 @@ tmp/
 temp/
 .DS_Store
 Thumbs.db
+cookies.txt
+login_out.txt
+out*.txt
+test_cookie.sh
+test_login*.sh
+*.db-journal
+tests/*.p
+data/raw/
 
 # ---------------------------------------------------------------------------
 # IDE / editor

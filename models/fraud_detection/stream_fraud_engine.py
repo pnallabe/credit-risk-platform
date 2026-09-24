@@ -48,19 +48,25 @@ class StreamFraudEngine:
         reject_threshold: float = 0.65,
         review_threshold: float = 0.35,
         window_1h_sec: int = 3600,
+        mule_analyzer: Optional[MuleNetworkAnalyzer] = None,
     ) -> None:
         self.reject_threshold = reject_threshold
         self.review_threshold = review_threshold
         self.window_1h_sec = window_1h_sec
+        self.mule_analyzer = mule_analyzer or MuleNetworkAnalyzer()
 
         # Account sliding window state: account_id -> deque of (timestamp, amount, recipient_id, device_id)
         self._account_history: Dict[str, deque] = defaultdict(deque)
 
     def evaluate_transaction(self, event: TransactionEvent) -> FraudScoreResult:
-        """Evaluate incoming streaming transaction event against sliding window velocity rules."""
+        """Evaluate incoming streaming transaction event against sliding window velocity rules & mule network graph."""
         t_start = time.monotonic()
         sender = event.sender_account_id
+        recipient = event.recipient_account_id
         now = event.timestamp
+
+        # Update mule network analyzer graph
+        self.mule_analyzer.add_transfer(sender, recipient, event.amount)
 
         # Clean history older than 1 hour
         history = self._account_history[sender]
@@ -77,6 +83,10 @@ class StreamFraudEngine:
         recipients_5m.add(event.recipient_account_id)
         app_scam = len(recipients_5m) >= 4 or (count_1m >= 3 and event.amount >= 2000.0)
 
+        # Mule cluster graph check
+        mule_res = self.mule_analyzer.detect_mule_clusters()
+        is_mule_cluster = (sender in mule_res.mule_account_ids) or (recipient in mule_res.mule_account_ids)
+
         # Calculate fraud score component weights
         base_score = 0.05
         reasons = []
@@ -91,6 +101,10 @@ class StreamFraudEngine:
         if app_scam:
             base_score += 0.40
             reasons.append("APP_PUSH_PAYMENT_SCAM_PATTERN")
+
+        if is_mule_cluster:
+            base_score += 0.45
+            reasons.append("MULE_NETWORK_CLUSTER_DETECTED")
 
         if event.amount >= 10000.0:
             base_score += 0.20
@@ -118,7 +132,7 @@ class StreamFraudEngine:
             velocity_5m_count=count_5m + 1,
             velocity_1h_count=count_1h + 1,
             app_scam_flag=app_scam,
-            mule_cluster_flag=False,
+            mule_cluster_flag=is_mule_cluster,
             reason_codes=reasons,
             latency_ms=latency_ms,
         )
@@ -173,3 +187,23 @@ class MuleNetworkAnalyzer:
             high_degree_hubs=high_degree_hubs,
             total_suspicious_volume=round(total_vol, 2),
         )
+
+
+class KafkaStreamFraudConsumer:
+    """Simulates real-time Kafka event stream consumer evaluating sub-50ms fraud scores."""
+
+    def __init__(self, fraud_engine: Optional[StreamFraudEngine] = None) -> None:
+        self.engine = fraud_engine or StreamFraudEngine()
+        self.processed_events_count: int = 0
+        self.flagged_fraud_count: int = 0
+
+    def consume_stream(self, event_stream: List[TransactionEvent]) -> List[FraudScoreResult]:
+        """Consume sequence of streaming transaction events and emit evaluations."""
+        results: List[FraudScoreResult] = []
+        for event in event_stream:
+            res = self.engine.evaluate_transaction(event)
+            results.append(res)
+            self.processed_events_count += 1
+            if res.action in ["REJECT", "REVIEW"]:
+                self.flagged_fraud_count += 1
+        return results
