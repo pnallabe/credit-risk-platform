@@ -1,0 +1,16 @@
+{
+  "timestamp": "2026-09-24T01:40:10.215061+00:00",
+  "status": "SUCCESS",
+  "fred_rates": {
+    "SOFR": 5.3,
+    "DGS10": 4.25,
+    "PRIME": 8.5,
+    "MORTGAGE30US": 6.42,
+    "CPIAUCSL": 314.5,
+    "UNRATE": 4.1
+  },
+  "market_quotes": {
+    "^VIX": 15.18,
+    "^TNX": 5.114
+  }
+}

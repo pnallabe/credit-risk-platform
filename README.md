@@ -17,6 +17,7 @@ modeling, and explainability built in.
 - [Installation](#installation)
 - [Usage Examples](#usage-examples)
 - [Benchmarks and Comparisons](#benchmarks-and-comparisons)
+- [Documentation & Resources](#documentation--resources)
 - [Project Structure](#project-structure)
 - [Contributing](#contributing)
 - [License](#license)
@@ -164,6 +165,16 @@ Script: scripts/canary_decision_api.py
 
 To benchmark in your environment, run canary checks and compare latency and error metrics against
 your current decision stack.
+
+## Documentation & Resources
+
+For detailed architecture, API specifications, compliance workflows, and mathematical models, explore our comprehensive documentation hub:
+
+* 📚 **[Central Documentation Hub](file:///Users/swarnabale/Documents/My%20Projects/credit-risk-platform/docs/README.md)**
+* 🔌 **[API Reference & OpenAPI Specification](file:///Users/swarnabale/Documents/My%20Projects/credit-risk-platform/docs/API_REFERENCE_GUIDE.md)**
+* 🛡️ **[Regulatory Compliance & BSA/FinCEN Operations Guide](file:///Users/swarnabale/Documents/My%20Projects/credit-risk-platform/docs/COMPLIANCE_WORKFLOW_GUIDE.md)**
+* 📈 **[Risk Modeling, CNPV Pricing & Champion-Challenger Manual](file:///Users/swarnabale/Documents/My%20Projects/credit-risk-platform/docs/RISK_AND_PRICING_ENGINE_GUIDE.md)**
+* 🏗️ **[System Architecture & Data Lineage Overview](file:///Users/swarnabale/Documents/My%20Projects/credit-risk-platform/docs/TECHNICAL_ARCHITECTURE.md)**
 
 ## Project Structure
 
