@@ -160,3 +160,4 @@ test-results/
 playwright-report/
 mlruns/
 .firebase/
+coverage.json
